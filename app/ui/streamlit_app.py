@@ -1,4 +1,12 @@
-﻿from io import BytesIO
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+(ROOT_DIR / "data").mkdir(parents=True, exist_ok=True)
+
+from io import BytesIO
 import pandas as pd
 import streamlit as st
 from app.config import settings
