@@ -7,7 +7,7 @@ Streamlit Community Cloud sys.path compatibility.
 import sys
 from io import BytesIO
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Set
 
 # Ensure project root is on sys.path (critical for Streamlit Community Cloud)
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -23,7 +23,7 @@ from app.extraction.ai_parser import parse_invoice_pdf_native
 from app.extraction.pdf_reader import compute_sha256
 from app.extraction.tabular_importer import parse_tabular_invoices
 from app.intelligence.audit_engine import DEFAULT_RULE_WEIGHTS
-from app.warehouse.models import build_engine, build_session_factory
+from app.warehouse.models import FactInvoice, build_engine, build_session_factory
 from app.warehouse.repository import (
     fetch_invoices_dataframe,
     fetch_lines_for_invoice,
@@ -63,6 +63,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "processing_spinner": "جارٍ استخراج البيانات وإجراء التدقيق الحسابي وتقييم المخاطر...",
         "processing_file": "جارٍ معالجة الملف ({current}/{total}): {filename}...",
         "upload_success": "تمت معالجة وتخزين {count} سجل فاتورة من {files} ملف(ات) بنجاح.",
+        "duplicate_in_batch": "تم تخطي الملف المكرر داخل الدفعة المرفوعة: '{filename}' (مطابق تماماً لملف '{original}').",
+        "duplicate_in_warehouse": "تم تخطي الملف '{filename}': موجود مسبقاً في مستودع البيانات (بصمة SHA-256 متطابقة).",
+        "duplicate_summary": "⚠️ تم تخطي {skipped} ملف(ات) مكررة تلقائياً لحماية المستودع وتوفير استهلاك API.",
         "file_error": "تعذرت معالجة الملف '{filename}': {err}",
         "error_prefix": "خطأ",
         "section_overview": "2. نظرة عامة على المصروفات والمخاطر",
@@ -129,6 +132,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "processing_spinner": "Extracting document data, running deterministic math audit, and scoring risks...",
         "processing_file": "Processing file ({current}/{total}): {filename}...",
         "upload_success": "Processed {count} invoice record(s) across {files} file(s).",
+        "duplicate_in_batch": "Skipped duplicate file in uploaded batch: '{filename}' (identical to '{original}').",
+        "duplicate_in_warehouse": "Skipped file '{filename}': already exists in the warehouse (matching SHA-256 hash).",
+        "duplicate_summary": "⚠️ Automatically skipped {skipped} duplicate file(s) to protect the warehouse and save API usage.",
         "file_error": "Failed to process file '{filename}': {err}",
         "error_prefix": "Error",
         "section_overview": "2. Spend & Risk Overview",
@@ -193,6 +199,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "processing_spinner": "Extraction des données, audit arithmétique et calcul du score de risque...",
         "processing_file": "Traitement du fichier ({current}/{total}) : {filename}...",
         "upload_success": "{count} facture(s) traitée(s) et enregistrée(s) depuis {files} fichier(s).",
+        "duplicate_in_batch": "Fichier en double ignoré dans le lot : « {filename} » (identique à « {original} »).",
+        "duplicate_in_warehouse": "Fichier « {filename} » ignoré : déjà présent dans l'entrepôt (empreinte SHA-256 identique).",
+        "duplicate_summary": "⚠️ {skipped} fichier(s) en double ignoré(s) automatiquement pour protéger l'entrepôt.",
         "file_error": "Échec du traitement du fichier « {filename} » : {err}",
         "error_prefix": "Erreur",
         "section_overview": "2. Aperçu des Dépenses et des Risques",
@@ -351,84 +360,7 @@ def get_direction_css(lang: str = "ar") -> str:
 
 
 # ---------------------------------------------------------------------------
-# App Initialization, Language Selector & Sidebar Configuration
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
-
-engine = build_engine(settings.DATABASE_URL)
-init_schema(engine)
-SessionLocal = build_session_factory(engine)
-
-with st.sidebar:
-    lang = st.selectbox(
-        "🌐 اللغة / Language / Langue",
-        options=list(SUPPORTED_LANGUAGES.keys()),
-        format_func=lambda code: SUPPORTED_LANGUAGES[code],
-        index=0,
-    )
-
-st.markdown(get_direction_css(lang), unsafe_allow_html=True)
-
-st.title(t("app_title", lang))
-st.caption(t("app_subtitle", lang))
-
-with st.sidebar:
-    st.divider()
-    st.header(t("sidebar_settings", lang))
-    default_api_key = getattr(settings, "GEMINI_API_KEY", "") or st.secrets.get("GEMINI_API_KEY", "")
-    api_key_input = st.text_input(t("gemini_api_key", lang), value=default_api_key, type="password")
-    spike_pct = st.slider(
-        t("price_spike_pct", lang),
-        min_value=5.0,
-        max_value=100.0,
-        value=float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0)),
-        step=5.0,
-    )
-    dup_days = st.slider(
-        t("near_duplicate_days", lang),
-        min_value=1,
-        max_value=30,
-        value=int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7)),
-        step=1,
-    )
-    proc_threshold = st.number_input(
-        t("procurement_threshold", lang),
-        min_value=10000.0,
-        max_value=100000000.0,
-        value=float(getattr(settings, "PROCUREMENT_THRESHOLD", 3500000.0)),
-        step=100000.0,
-    )
-
-    st.divider()
-    st.subheader(t("sidebar_warehouse", lang))
-    if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
-        reset_warehouse(engine)
-        st.success(t("reset_warehouse_success", lang))
-        st.rerun()
-
-    st.divider()
-    st.subheader(t("sidebar_rule_weights", lang))
-    active_weights: Dict[str, int] = {}
-    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
-        label = get_rule_label(rule_key, lang)
-        desc = get_rule_description(rule_key, lang)
-        enabled = st.checkbox(label, value=True, help=desc, key=f"rule_en_{rule_key}")
-        if enabled:
-            w_val = st.slider(
-                t("rule_weight", lang, label=label),
-                min_value=0,
-                max_value=60,
-                value=int(default_w),
-                step=5,
-                key=f"rule_w_{rule_key}",
-            )
-            active_weights[rule_key] = int(w_val)
-        else:
-            active_weights[rule_key] = 0
-
-
-# ---------------------------------------------------------------------------
-# Section 1: Invoice Ingestion (Multi-File Batch Support)
+# Section 1: Invoice Ingestion (Multi-File Batch + Smart Deduplication)
 # ---------------------------------------------------------------------------
 st.subheader(t("section_ingest", lang))
 uploaded_files = st.file_uploader(
@@ -440,12 +372,19 @@ uploaded_files = st.file_uploader(
 if uploaded_files and st.button(t("process_btn", lang), type="primary"):
     try:
         results = []
+        duplicate_warnings = []
         errors = []
+        seen_hashes_in_batch: Dict[str, str] = {}
         total_files = len(uploaded_files)
         progress_bar = st.progress(0.0)
         status_text = st.empty()
 
         with SessionLocal() as session:
+            # Pre-load existing file hashes from the warehouse for instant duplicate detection
+            existing_hashes: Set[str] = {
+                row[0] for row in session.query(FactInvoice.file_sha256).all() if row[0]
+            }
+
             for file_idx, uploaded in enumerate(uploaded_files, start=1):
                 status_text.info(
                     t("processing_file", lang, current=file_idx, total=total_files, filename=uploaded.name)
@@ -454,6 +393,30 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                     file_bytes = uploaded.getvalue()
                     base_hash = compute_sha256(file_bytes)
                     lower_name = uploaded.name.lower()
+
+                    # 1. Check if the exact file was already selected in the same upload batch
+                    if base_hash in seen_hashes_in_batch:
+                        duplicate_warnings.append(
+                            t(
+                                "duplicate_in_batch",
+                                lang,
+                                filename=uploaded.name,
+                                original=seen_hashes_in_batch[base_hash],
+                            )
+                        )
+                        progress_bar.progress(file_idx / total_files)
+                        continue
+
+                    # 2. Check if the exact file already exists in the warehouse before calling Gemini API
+                    if base_hash in existing_hashes:
+                        duplicate_warnings.append(
+                            t("duplicate_in_warehouse", lang, filename=uploaded.name)
+                        )
+                        seen_hashes_in_batch[base_hash] = uploaded.name
+                        progress_bar.progress(file_idx / total_files)
+                        continue
+
+                    seen_hashes_in_batch[base_hash] = uploaded.name
 
                     if lower_name.endswith(".pdf"):
                         invoice, lines = parse_invoice_pdf_native(file_bytes, api_key=api_key_input)
@@ -468,6 +431,7 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                             procurement_threshold=float(proc_threshold),
                             rule_weights=active_weights,
                         )
+                        existing_hashes.add(base_hash)
                         results.append(res)
                     else:
                         batch = parse_tabular_invoices(file_bytes, uploaded.name)
@@ -475,6 +439,8 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                             row_hash = compute_sha256(
                                 f"{base_hash}:{idx}:{invoice.vendor_name}:{invoice.invoice_number}".encode("utf-8")
                             )
+                            if row_hash in existing_hashes:
+                                continue
                             res = ingest_invoice_record(
                                 session=session,
                                 invoice=invoice,
@@ -486,6 +452,7 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                                 procurement_threshold=float(proc_threshold),
                                 rule_weights=active_weights,
                             )
+                            existing_hashes.add(row_hash)
                             results.append(res)
                 except Exception as file_exc:
                     errors.append(t("file_error", lang, filename=uploaded.name, err=file_exc))
@@ -494,8 +461,15 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
 
         status_text.empty()
         if results:
-            st.success(t("upload_success", lang, count=len(results), files=total_files))
+            processed_files_count = len(seen_hashes_in_batch) - len(
+                [w for w in duplicate_warnings if "warehouse" in w or "المستودع" in w or "l'entrepôt" in w]
+            )
+            st.success(t("upload_success", lang, count=len(results), files=max(processed_files_count, 1)))
             st.json(results)
+        if duplicate_warnings:
+            st.warning(t("duplicate_summary", lang, skipped=len(duplicate_warnings)))
+            for warn_msg in duplicate_warnings:
+                st.caption(f"• {warn_msg}")
         for err_msg in errors:
             st.error(err_msg)
     except Exception as exc:
