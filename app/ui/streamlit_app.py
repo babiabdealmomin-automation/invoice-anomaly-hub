@@ -57,11 +57,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "sidebar_rule_weights": "⚖️ أوزان وتفعيل قواعد المخاطر",
         "rule_weight": "وزن القاعدة: {label}",
         "section_ingest": "1. استيراد الفواتير (PDF / CSV / XLSX)",
-        "upload_label": "ارفع ملف الفاتورة (PDF أو CSV أو XLSX)",
-        "upload_help": "يدعم الفواتير باللغات العربية والفرنسية والإنجليزية مع منع التكرار الحرفي عبر بصمة SHA-256.",
-        "process_btn": "🚀 تحليل وتخزين في المستودع",
+        "upload_label": "ارفع ملفات الفواتير (PDF أو CSV أو XLSX)",
+        "upload_help": "يمكنك تحديد ورفع عدة ملفات دفعة واحدة باللغات العربية والفرنسية والإنجليزية مع منع التكرار الحرفي عبر بصمة SHA-256.",
+        "process_btn": "🚀 تحليل وتخزين الملفات في المستودع",
         "processing_spinner": "جارٍ استخراج البيانات وإجراء التدقيق الحسابي وتقييم المخاطر...",
-        "upload_success": "تمت معالجة وتخزين {count} سجل فاتورة بنجاح.",
+        "processing_file": "جارٍ معالجة الملف ({current}/{total}): {filename}...",
+        "upload_success": "تمت معالجة وتخزين {count} سجل فاتورة من {files} ملف(ات) بنجاح.",
+        "file_error": "تعذرت معالجة الملف '{filename}': {err}",
         "error_prefix": "خطأ",
         "section_overview": "2. نظرة عامة على المصروفات والمخاطر",
         "no_data_yet": "لا توجد فواتير مخزنة بعد. ارفع ملف PDF أو CSV أو XLSX أعلاه للبدء.",
@@ -120,12 +122,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "reset_warehouse_success": "Warehouse cleared and reinitialized.",
         "sidebar_rule_weights": "⚖️ Risk Rule Weights & Toggles",
         "rule_weight": "{label} Weight",
-        "section_ingest": "1. Ingest Invoice (PDF / CSV / XLSX)",
-        "upload_label": "Upload invoice PDF, CSV, or XLSX",
-        "upload_help": "Supports Arabic, French, and English invoices with SHA-256 exact-duplicate protection.",
-        "process_btn": "🚀 Analyze & Store in Warehouse",
+        "section_ingest": "1. Ingest Invoices (PDF / CSV / XLSX)",
+        "upload_label": "Upload invoice PDF, CSV, or XLSX files",
+        "upload_help": "Select and upload multiple Arabic, French, or English invoice files at once with SHA-256 exact-duplicate protection.",
+        "process_btn": "🚀 Analyze & Store Files in Warehouse",
         "processing_spinner": "Extracting document data, running deterministic math audit, and scoring risks...",
-        "upload_success": "Processed {count} invoice record(s).",
+        "processing_file": "Processing file ({current}/{total}): {filename}...",
+        "upload_success": "Processed {count} invoice record(s) across {files} file(s).",
+        "file_error": "Failed to process file '{filename}': {err}",
         "error_prefix": "Error",
         "section_overview": "2. Spend & Risk Overview",
         "no_data_yet": "No invoices stored yet. Upload a PDF, CSV, or XLSX invoice file above to begin.",
@@ -182,12 +186,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "reset_warehouse_success": "L'entrepôt a été vidé et réinitialisé avec succès.",
         "sidebar_rule_weights": "⚖️ Pondération et Activation des Règles",
         "rule_weight": "Poids : {label}",
-        "section_ingest": "1. Importer une facture (PDF / CSV / XLSX)",
-        "upload_label": "Téléverser une facture PDF, CSV ou XLSX",
-        "upload_help": "Prend en charge l'arabe, le français et l'anglais avec blocage des doublons exacts via SHA-256.",
-        "process_btn": "🚀 Analyser et Stocker dans l'Entrepôt",
+        "section_ingest": "1. Importer des factures (PDF / CSV / XLSX)",
+        "upload_label": "Téléverser des factures PDF, CSV ou XLSX",
+        "upload_help": "Sélectionnez et téléversez plusieurs fichiers (arabe, français, anglais) simultanément avec protection anti-doublon SHA-256.",
+        "process_btn": "🚀 Analyser et Stocker les Fichiers",
         "processing_spinner": "Extraction des données, audit arithmétique et calcul du score de risque...",
-        "upload_success": "{count} facture(s) traitée(s) et enregistrée(s) avec succès.",
+        "processing_file": "Traitement du fichier ({current}/{total}) : {filename}...",
+        "upload_success": "{count} facture(s) traitée(s) et enregistrée(s) depuis {files} fichier(s).",
+        "file_error": "Échec du traitement du fichier « {filename} » : {err}",
         "error_prefix": "Erreur",
         "section_overview": "2. Aperçu des Dépenses et des Risques",
         "no_data_yet": "Aucune facture enregistrée. Téléversez un fichier PDF, CSV ou XLSX ci-dessus pour commencer.",
@@ -345,137 +351,40 @@ def get_direction_css(lang: str = "ar") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Streamlit App Initialization
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
-
-engine = build_engine(settings.DATABASE_URL)
-init_schema(engine)
-SessionLocal = build_session_factory(engine)
-
-# Language selector at top of sidebar (defaults to Arabic)
-with st.sidebar:
-    lang = st.selectbox(
-        label="🌐 اللغة / Language / Langue",
-        options=list(SUPPORTED_LANGUAGES.keys()),
-        format_func=lambda code: SUPPORTED_LANGUAGES[code],
-        index=0,
-        key="ui_language",
-    )
-
-# Apply RTL/LTR layout CSS
-st.markdown(get_direction_css(lang), unsafe_allow_html=True)
-
-# Main Header
-st.title(t("app_title", lang))
-st.caption(t("app_subtitle", lang))
-
-# Sidebar Controls
-with st.sidebar:
-    st.divider()
-    st.header(t("sidebar_settings", lang))
-    api_key_input = st.text_input(
-        t("gemini_api_key", lang),
-        value=settings.GEMINI_API_KEY,
-        type="password",
-    )
-    spike_pct = st.slider(
-        t("price_spike_pct", lang),
-        min_value=5.0,
-        max_value=100.0,
-        value=settings.PRICE_SPIKE_THRESHOLD_PCT,
-        step=5.0,
-    )
-    dup_days = st.slider(
-        t("near_duplicate_days", lang),
-        min_value=1,
-        max_value=30,
-        value=settings.NEAR_DUPLICATE_DAYS,
-        step=1,
-    )
-    proc_threshold = st.number_input(
-        t("procurement_threshold", lang),
-        min_value=10000.0,
-        max_value=100000000.0,
-        value=3500000.0,
-        step=100000.0,
-    )
-
-    st.divider()
-    st.subheader(t("sidebar_warehouse", lang))
-    if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
-        reset_warehouse(engine)
-        st.success(t("reset_warehouse_success", lang))
-        st.rerun()
-
-    st.divider()
-    st.subheader(t("sidebar_rule_weights", lang))
-    active_weights: dict[str, int] = {}
-    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
-        label = get_rule_label(rule_key, lang)
-        description = get_rule_description(rule_key, lang)
-        enabled = st.checkbox(
-            label,
-            value=True,
-            help=description,
-            key=f"rule_en_{rule_key}",
-        )
-        if enabled:
-            w_val = st.slider(
-                t("rule_weight", lang, label=label),
-                min_value=0,
-                max_value=60,
-                value=int(default_w),
-                step=5,
-                key=f"rule_w_{rule_key}",
-            )
-            active_weights[rule_key] = int(w_val)
-        else:
-            active_weights[rule_key] = 0
-
-# ---------------------------------------------------------------------------
-# Section 1: Invoice Ingestion
+# Section 1: Invoice Ingestion (Multi-File Batch Support)
 # ---------------------------------------------------------------------------
 st.subheader(t("section_ingest", lang))
-uploaded = st.file_uploader(
+uploaded_files = st.file_uploader(
     t("upload_label", lang),
     type=["pdf", "csv", "xlsx"],
+    accept_multiple_files=True,
     help=t("upload_help", lang),
 )
-if uploaded is not None and st.button(t("process_btn", lang), type="primary"):
+if uploaded_files and st.button(t("process_btn", lang), type="primary"):
     try:
-        with st.spinner(t("processing_spinner", lang)):
-            file_bytes = uploaded.getvalue()
-            base_hash = compute_sha256(file_bytes)
-            lower_name = uploaded.name.lower()
+        results = []
+        errors = []
+        total_files = len(uploaded_files)
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
 
-            results = []
-            with SessionLocal() as session:
-                if lower_name.endswith(".pdf"):
-                    invoice, lines = parse_invoice_pdf_native(file_bytes, api_key=api_key_input)
-                    res = ingest_invoice_record(
-                        session=session,
-                        invoice=invoice,
-                        lines=lines,
-                        file_sha256=base_hash,
-                        source_filename=uploaded.name,
-                        price_spike_threshold_pct=spike_pct,
-                        near_duplicate_days=dup_days,
-                        procurement_threshold=float(proc_threshold),
-                        rule_weights=active_weights,
-                    )
-                    results.append(res)
-                else:
-                    batch = parse_tabular_invoices(file_bytes, uploaded.name)
-                    for idx, (invoice, lines) in enumerate(batch, start=1):
-                        row_hash = compute_sha256(
-                            f"{base_hash}:{idx}:{invoice.vendor_name}:{invoice.invoice_number}".encode("utf-8")
-                        )
+        with SessionLocal() as session:
+            for file_idx, uploaded in enumerate(uploaded_files, start=1):
+                status_text.info(
+                    t("processing_file", lang, current=file_idx, total=total_files, filename=uploaded.name)
+                )
+                try:
+                    file_bytes = uploaded.getvalue()
+                    base_hash = compute_sha256(file_bytes)
+                    lower_name = uploaded.name.lower()
+
+                    if lower_name.endswith(".pdf"):
+                        invoice, lines = parse_invoice_pdf_native(file_bytes, api_key=api_key_input)
                         res = ingest_invoice_record(
                             session=session,
                             invoice=invoice,
                             lines=lines,
-                            file_sha256=row_hash,
+                            file_sha256=base_hash,
                             source_filename=uploaded.name,
                             price_spike_threshold_pct=spike_pct,
                             near_duplicate_days=dup_days,
@@ -483,9 +392,35 @@ if uploaded is not None and st.button(t("process_btn", lang), type="primary"):
                             rule_weights=active_weights,
                         )
                         results.append(res)
+                    else:
+                        batch = parse_tabular_invoices(file_bytes, uploaded.name)
+                        for idx, (invoice, lines) in enumerate(batch, start=1):
+                            row_hash = compute_sha256(
+                                f"{base_hash}:{idx}:{invoice.vendor_name}:{invoice.invoice_number}".encode("utf-8")
+                            )
+                            res = ingest_invoice_record(
+                                session=session,
+                                invoice=invoice,
+                                lines=lines,
+                                file_sha256=row_hash,
+                                source_filename=uploaded.name,
+                                price_spike_threshold_pct=spike_pct,
+                                near_duplicate_days=dup_days,
+                                procurement_threshold=float(proc_threshold),
+                                rule_weights=active_weights,
+                            )
+                            results.append(res)
+                except Exception as file_exc:
+                    errors.append(t("file_error", lang, filename=uploaded.name, err=file_exc))
 
-        st.success(t("upload_success", lang, count=len(results)))
-        st.json(results)
+                progress_bar.progress(file_idx / total_files)
+
+        status_text.empty()
+        if results:
+            st.success(t("upload_success", lang, count=len(results), files=total_files))
+            st.json(results)
+        for err_msg in errors:
+            st.error(err_msg)
     except Exception as exc:
         st.error(f"{t('error_prefix', lang)}: {exc}")
 
