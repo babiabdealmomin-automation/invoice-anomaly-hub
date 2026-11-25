@@ -360,6 +360,87 @@ def get_direction_css(lang: str = "ar") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Page Setup, Database Initialization & Sidebar Controls
+# ---------------------------------------------------------------------------
+st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
+
+engine = build_engine(settings.DATABASE_URL)
+init_schema(engine)
+SessionLocal = build_session_factory(engine)
+
+try:
+    default_api_key = st.secrets.get("GEMINI_API_KEY", getattr(settings, "GEMINI_API_KEY", ""))
+except Exception:
+    default_api_key = getattr(settings, "GEMINI_API_KEY", "")
+
+default_spike_pct = float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0))
+default_dup_days = int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7))
+default_proc_threshold = float(getattr(settings, "PROCUREMENT_THRESHOLD", 3500000.0))
+
+with st.sidebar:
+    lang = st.selectbox(
+        "🌐 اللغة / Language / Langue",
+        options=list(SUPPORTED_LANGUAGES.keys()),
+        index=0,
+        format_func=lambda code: SUPPORTED_LANGUAGES[code],
+    )
+    st.divider()
+    st.header(t("sidebar_settings", lang))
+    api_key_input = st.text_input(t("gemini_api_key", lang), value=default_api_key, type="password")
+    spike_pct = st.slider(
+        t("price_spike_pct", lang),
+        min_value=5.0,
+        max_value=100.0,
+        value=default_spike_pct,
+        step=5.0,
+    )
+    dup_days = st.slider(
+        t("near_duplicate_days", lang),
+        min_value=1,
+        max_value=30,
+        value=default_dup_days,
+        step=1,
+    )
+    proc_threshold = st.number_input(
+        t("procurement_threshold", lang),
+        min_value=10000.0,
+        max_value=100000000.0,
+        value=default_proc_threshold,
+        step=100000.0,
+    )
+
+    st.divider()
+    st.subheader(t("sidebar_warehouse", lang))
+    if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
+        reset_warehouse(engine)
+        st.success(t("reset_warehouse_success", lang))
+        st.rerun()
+
+    st.divider()
+    st.subheader(t("sidebar_rule_weights", lang))
+    active_weights: Dict[str, int] = {}
+    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
+        label = get_rule_label(rule_key, lang)
+        desc = get_rule_description(rule_key, lang)
+        enabled = st.checkbox(label, value=True, key=f"rule_en_{rule_key}", help=desc)
+        if enabled:
+            w_val = st.slider(
+                t("rule_weight", lang, label=label),
+                min_value=0,
+                max_value=60,
+                value=int(default_w),
+                step=5,
+                key=f"rule_w_{rule_key}",
+            )
+            active_weights[rule_key] = int(w_val)
+        else:
+            active_weights[rule_key] = 0
+
+st.markdown(get_direction_css(lang), unsafe_allow_html=True)
+st.title(t("app_title", lang))
+st.caption(t("app_subtitle", lang))
+
+# ---------------------------------------------------------------------------
 # Section 1: Invoice Ingestion (Multi-File Batch + Smart Deduplication)
 # ---------------------------------------------------------------------------
 st.subheader(t("section_ingest", lang))
