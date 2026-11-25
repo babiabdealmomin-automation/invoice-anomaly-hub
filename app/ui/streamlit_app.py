@@ -351,6 +351,82 @@ def get_direction_css(lang: str = "ar") -> str:
 
 
 # ---------------------------------------------------------------------------
+# App Initialization, Language Selector & Sidebar Configuration
+# ---------------------------------------------------------------------------
+st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
+
+engine = build_engine(settings.DATABASE_URL)
+init_schema(engine)
+SessionLocal = build_session_factory(engine)
+
+with st.sidebar:
+    lang = st.selectbox(
+        "🌐 اللغة / Language / Langue",
+        options=list(SUPPORTED_LANGUAGES.keys()),
+        format_func=lambda code: SUPPORTED_LANGUAGES[code],
+        index=0,
+    )
+
+st.markdown(get_direction_css(lang), unsafe_allow_html=True)
+
+st.title(t("app_title", lang))
+st.caption(t("app_subtitle", lang))
+
+with st.sidebar:
+    st.divider()
+    st.header(t("sidebar_settings", lang))
+    api_key_input = st.text_input(t("gemini_api_key", lang), value=settings.GEMINI_API_KEY, type="password")
+    spike_pct = st.slider(
+        t("price_spike_pct", lang),
+        min_value=5.0,
+        max_value=100.0,
+        value=float(settings.PRICE_SPIKE_THRESHOLD_PCT),
+        step=5.0,
+    )
+    dup_days = st.slider(
+        t("near_duplicate_days", lang),
+        min_value=1,
+        max_value=30,
+        value=int(settings.NEAR_DUPLICATE_DAYS),
+        step=1,
+    )
+    proc_threshold = st.number_input(
+        t("procurement_threshold", lang),
+        min_value=10000.0,
+        max_value=100000000.0,
+        value=float(settings.PROCUREMENT_THRESHOLD),
+        step=100000.0,
+    )
+
+    st.divider()
+    st.subheader(t("sidebar_warehouse", lang))
+    if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
+        reset_warehouse(engine)
+        st.success(t("reset_warehouse_success", lang))
+        st.rerun()
+
+    st.divider()
+    st.subheader(t("sidebar_rule_weights", lang))
+    active_weights: Dict[str, int] = {}
+    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
+        label = get_rule_label(rule_key, lang)
+        desc = get_rule_description(rule_key, lang)
+        enabled = st.checkbox(label, value=True, help=desc, key=f"rule_en_{rule_key}")
+        if enabled:
+            w_val = st.slider(
+                t("rule_weight", lang, label=label),
+                min_value=0,
+                max_value=60,
+                value=int(default_w),
+                step=5,
+                key=f"rule_w_{rule_key}",
+            )
+            active_weights[rule_key] = int(w_val)
+        else:
+            active_weights[rule_key] = 0
+
+
+# ---------------------------------------------------------------------------
 # Section 1: Invoice Ingestion (Multi-File Batch Support)
 # ---------------------------------------------------------------------------
 st.subheader(t("section_ingest", lang))
