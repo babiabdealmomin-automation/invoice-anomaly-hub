@@ -375,26 +375,27 @@ st.caption(t("app_subtitle", lang))
 with st.sidebar:
     st.divider()
     st.header(t("sidebar_settings", lang))
-    api_key_input = st.text_input(t("gemini_api_key", lang), value=settings.GEMINI_API_KEY, type="password")
+    default_api_key = getattr(settings, "GEMINI_API_KEY", "") or st.secrets.get("GEMINI_API_KEY", "")
+    api_key_input = st.text_input(t("gemini_api_key", lang), value=default_api_key, type="password")
     spike_pct = st.slider(
         t("price_spike_pct", lang),
         min_value=5.0,
         max_value=100.0,
-        value=float(settings.PRICE_SPIKE_THRESHOLD_PCT),
+        value=float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0)),
         step=5.0,
     )
     dup_days = st.slider(
         t("near_duplicate_days", lang),
         min_value=1,
         max_value=30,
-        value=int(settings.NEAR_DUPLICATE_DAYS),
+        value=int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7)),
         step=1,
     )
     proc_threshold = st.number_input(
         t("procurement_threshold", lang),
         min_value=10000.0,
         max_value=100000000.0,
-        value=float(settings.PROCUREMENT_THRESHOLD),
+        value=float(getattr(settings, "PROCUREMENT_THRESHOLD", 3500000.0)),
         step=100000.0,
     )
 
