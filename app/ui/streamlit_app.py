@@ -1,6 +1,6 @@
 """
 Streamlit interactive dashboard for Invoice Spend & Anomaly Intelligence Hub.
-Self-contained multilingual UI (Arabic with RTL, English, French) and
+Self-contained multilingual UI (Arabic with mobile-safe RTL, English, French) and
 Streamlit Community Cloud sys.path compatibility.
 """
 
@@ -122,7 +122,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "risk_LOW": "منخفض (LOW)",
         "risk_MEDIUM": "متوسط (MEDIUM)",
         "risk_HIGH": "مرتفع (HIGH)",
-        # Audit Rules (Labels - Clear Commercial & Accounting Terminology)
         "rule_ARITHMETIC_MISMATCH": "فرق في المطابقة الحسابية",
         "rule_PRICE_SPIKE": "ارتفاع غير معتاد في سعر الوحدة",
         "rule_NEAR_DUPLICATE_INVOICE": "اشتباه تكرار فاتورة لنفس المورّد",
@@ -134,7 +133,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rule_INVALID_NIF_FORMAT": "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة",
         "rule_BANK_ACCOUNT_CHANGED": "تغيير بيانات الحساب البنكي للمورّد",
         "rule_NON_POSITIVE_GRAND_TOTAL": "فاتورة بإجمالي صفري أو سالب",
-        # Audit Rules (Descriptions - Clear Commercial Explanations)
         "desc_ARITHMETIC_MISMATCH": "عدم تطابق ناتج (الكمية × سعر الوحدة) مع إجمالي البند، أو اختلاف المجموع الفرعي وضريبة القيمة المضافة والخصم عن الإجمالي النهائي.",
         "desc_PRICE_SPIKE": "تجاوز سعر الوحدة لمتوسط الأسعار التاريخية لنفس المورّد بنسبة تفوق الحد المسموح به.",
         "desc_NEAR_DUPLICATE_INVOICE": "وجود فاتورة أخرى لنفس المورّد بمبلغ متقارب جداً خلال نافذة الأيام المحددة، مما يستدعي التأكد من عدم الازدواج.",
@@ -264,6 +262,20 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "duplicate_summary": "⚠️ {skipped} fichier(s) en double ignoré(s) automatiquement pour protéger l'entrepôt.",
         "file_error": "Échec du traitement du fichier « {filename} » : {err}",
         "error_prefix": "Erreur",
+        "section_overview": "2. Aperçu des Dépenses et des Risques",
+        "no_data_yet": "Aucune facture enregistrée. Téléversez un fichier PDF, CSV ou XLSX ci-dessus pour commencer.",
+        "kpi_total_invoices": "Nombre de Factures",
+        "kpi_total_spend": "Dépenses Totales ({currency})",
+        "kpi_high_risk": "Révision Prioritaire",
+        "kpi_total_discrepancy": "Écart Arithmétique Total ({currency})",
+        "vat_audit_warning": "⚠️ Alerte TVA : {count} facture(s) présentent un montant de TVA s'écartant du taux standard de {vat}%.",
+        "spend_by_vendor": "Dépenses par Fournisseur",
+        "vendor_risk_summary": "Synthèse des Risques et Écarts par Fournisseur",
+        "filter_risk_level": "Filtrer par niveau de risque",
+        "inspect_invoice_key": "Inspecter les lignes et notes d'audit pour la clé facture",
+        "audit_notes_prefix": "Notes d'audit",
+        "line_items_deviation": "Lignes de facture et écart de prix",
+        "section_exports": "3. Exports Propres",
         "export_csv": "⬇️ Télécharger CSV",
         "export_excel": "⬇️ Télécharger Excel (.xlsx)",
         "export_json": "⬇️ Télécharger JSON",
@@ -294,34 +306,6 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "desc_INVALID_NIF_FORMAT": "L'identifiant fiscal ne respecte pas le format réglementaire attendu.",
         "desc_BANK_ACCOUNT_CHANGED": "Les coordonnées bancaires (IBAN / RIB) ont changé par rapport aux factures précédentes.",
         "desc_NON_POSITIVE_GRAND_TOTAL": "Le montant total TTC est nul ou négatif et nécessite une régularisation comptable.",
-    },
-}
-
-COLUMN_LABELS: Dict[str, Dict[str, str]] = {
-    "ar": {
-        "invoice_key": "رمز الفاتورة",
-        "invoice_number": "رقم الفاتورة",
-        "vendor_name": "اسم المورّد",
-        "invoice_date": "تاريخ الفاتورة",
-        "currency": "العملة",
-        "subtotal_amount": "المبلغ قبل الضريبة",
-        "tax_amount": "ضريبة القيمة المضافة (VAT)",
-        "discount_amount": "الخصم",
-        "grand_total_amount": "الإجمالي شامل الضريبة",
-        "discrepancy_amount": "الفرق الحسابي",
-        "risk_score": "درجة المخاطر",
-        "risk_level": "مستوى الأولوية",
-        "summary_notes": "ملاحظات المراجعة المحاسبية",
-        "total_spend": "إجمالي المصروفات",
-        "invoice_count": "عدد الفواتير",
-        "avg_risk_score": "متوسط المخاطر",
-        "total_discrepancy": "إجمالي الفروقات",
-        "description": "وصف البند",
-        "quantity": "الكمية",
-        "unit_price": "سعر الوحدة",
-        "line_total": "إجمالي البند",
-        "expected_line_total": "الإجمالي المحسوب",
-        "price_deviation_pct": "نسبة انحراف السعر (%)",
     },
 }
 
@@ -466,23 +450,55 @@ def localize_audit_notes(note_text: object, lang: str = "ar") -> str:
 
 def get_direction_css(lang: str = "ar") -> str:
     """
-    Return responsive CSS for:
-    - Clean RTL/LTR alignment
-    - 2x2 responsive KPI grid on mobile screens without number truncation
-    - Touch-friendly spacing for filter tags/pills
-    - Hiding Streamlit staging/deploy chrome & footer badges
+    Mobile-safe responsive CSS:
+    - Fixes Streamlit's collapsed sidebar overlap bug on mobile/RTL browsers by
+      explicitly translating collapsed sidebars completely off-screen.
+    - Applies RTL to content blocks and sidebar inner contents cleanly.
+    - 2x2 responsive KPI grid on mobile screens without number truncation.
+    - Touch-friendly spacing for filter tags/pills.
     """
-    dir_rule = "direction: rtl; text-align: right;" if lang == "ar" else "direction: ltr; text-align: left;"
+    content_dir = "direction: rtl; text-align: right;" if lang == "ar" else "direction: ltr; text-align: left;"
     metric_align = "right" if lang == "ar" else "left"
     return f"""
     <style>
-        /* Hide Streamlit staging badges, Deploy button, and default footer */
+        /* Hide Streamlit deploy badge and default footer while keeping sidebar toggle accessible */
         #MainMenu {{visibility: hidden;}}
         footer {{visibility: hidden;}}
-        .stDeployButton, [data-testid="stToolbar"] {{display: none !important;}}
+        .stDeployButton {{display: none !important;}}
 
-        .stApp, .stSidebar, [data-testid="stAppViewContainer"] {{
-            {dir_rule}
+        /* CRITICAL FIX: Force collapsed sidebar completely off-screen on mobile & RTL */
+        section[data-testid="stSidebar"][aria-expanded="false"] {{
+            transform: translateX(-110%) !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            width: 0 !important;
+            min-width: 0 !important;
+            max-width: 0 !important;
+            overflow: hidden !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+        }}
+
+        section[data-testid="stSidebar"][aria-expanded="true"] {{
+            transform: translateX(0) !important;
+            visibility: visible !important;
+            pointer-events: auto !important;
+            z-index: 999999 !important;
+        }}
+
+        /* Apply RTL/LTR safely to inner content containers */
+        [data-testid="stMainBlockContainer"],
+        [data-testid="stSidebarUserContent"] {{
+            {content_dir}
+        }}
+
+        [data-testid="stMainBlockContainer"] h1,
+        [data-testid="stMainBlockContainer"] h2,
+        [data-testid="stMainBlockContainer"] h3,
+        [data-testid="stMainBlockContainer"] p,
+        [data-testid="stSidebarUserContent"] p,
+        [data-testid="stSidebarUserContent"] label {{
+            {content_dir}
         }}
 
         /* Prevent metric number truncation and enforce crisp typography */
@@ -507,8 +523,28 @@ def get_direction_css(lang: str = "ar") -> str:
             font-size: clamp(1.05rem, 2.2vw, 1.55rem) !important;
         }}
 
-        /* Responsive 2x2 KPI card grid on mobile & tablet screens */
+        /* Mobile & in-app browser optimization */
         @media (max-width: 768px) {{
+            section[data-testid="stSidebar"][aria-expanded="true"] {{
+                width: 85vw !important;
+                max-width: 340px !important;
+            }}
+            [data-testid="stMainBlockContainer"] {{
+                padding-left: 0.95rem !important;
+                padding-right: 0.95rem !important;
+                padding-top: 2.5rem !important;
+                max-width: 100vw !important;
+            }}
+            [data-testid="stMainBlockContainer"] h1 {{
+                font-size: 1.45rem !important;
+                line-height: 1.35 !important;
+                word-break: break-word !important;
+            }}
+            [data-testid="stMainBlockContainer"] h2,
+            [data-testid="stMainBlockContainer"] h3 {{
+                font-size: 1.12rem !important;
+                line-height: 1.35 !important;
+            }}
             [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {{
                 display: grid !important;
                 grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
@@ -572,7 +608,11 @@ def sanitize_error_message(err: object) -> str:
 # ---------------------------------------------------------------------------
 # Page Setup, Session/Workspace Isolation & Sidebar Controls
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
+st.set_page_config(
+    page_title="Invoice Spend & Anomaly Hub",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 if "session_workspace_id" not in st.session_state:
     st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
@@ -746,7 +786,6 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
         status_text = st.empty()
 
         with SessionLocal() as session:
-            # Pre-load existing file hashes from the warehouse for instant duplicate detection
             existing_hashes: Set[str] = {
                 row[0] for row in session.query(FactInvoice.file_sha256).all() if row[0]
             }
@@ -760,7 +799,6 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                     base_hash = compute_sha256(file_bytes)
                     lower_name = uploaded.name.lower()
 
-                    # 1. Check if the exact file was already selected in the same upload batch
                     if base_hash in seen_hashes_in_batch:
                         duplicate_warnings.append(
                             t(
@@ -773,7 +811,6 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                         progress_bar.progress(file_idx / total_files)
                         continue
 
-                    # 2. Check if the exact file already exists in the warehouse before calling Gemini API
                     if base_hash in existing_hashes:
                         duplicate_warnings.append(
                             t("duplicate_in_warehouse", lang, filename=uploaded.name)
@@ -872,12 +909,9 @@ df_invoices = normalize_and_validate_dataframe(
 if df_invoices.empty:
     st.info(t("no_data_yet", lang))
 else:
-    # Fill missing currency with the active reporting currency for display consistency
     df_invoices["currency"] = df_invoices["currency"].fillna(selected_currency).replace("", selected_currency)
-    # Localize engine audit summary notes into the active UI language
     df_invoices["summary_notes"] = df_invoices["summary_notes"].apply(lambda txt: localize_audit_notes(txt, lang))
 
-    # Preserve NaN vs genuine 0.0: skipna=True ignores missing data instead of fabricating zeros
     total_spend_val = df_invoices["grand_total_amount"].sum(skipna=True)
     total_disc_val = df_invoices["discrepancy_amount"].abs().sum(skipna=True)
     high_risk_count = int((df_invoices["risk_level"].fillna("").astype(str).str.upper() == "HIGH").sum())
@@ -894,7 +928,6 @@ else:
         f"{total_disc_val:,.2f} {selected_currency}" if pd.notna(total_disc_val) else "—",
     )
 
-    # Dynamic VAT rate reconciliation check against configured VAT % (e.g., 15% SAR, 5% AED, 19% DZD)
     valid_vat_rows = df_invoices.dropna(subset=["subtotal_amount", "tax_amount"])
     valid_vat_rows = valid_vat_rows[valid_vat_rows["subtotal_amount"] > 0]
     if not valid_vat_rows.empty:
@@ -964,6 +997,22 @@ else:
             for col in localized_lines_df.columns
         }
         st.dataframe(localized_lines_df, use_container_width=True, column_config=lines_col_cfg)
+
+    # ---------------------------------------------------------------------------
+    # Section 3: Clean Exports
+    # ---------------------------------------------------------------------------
+    st.divider()
+    st.subheader(t("section_exports", lang))
+    col_e1, col_e2, col_e3 = st.columns(3)
+    col_e1.download_button(
+        label=t("export_csv", lang),
+        data=filtered_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="invoices_intelligence.csv",
+        mime="text/csv",
+    )
+    excel_buf = BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+        filtered_df.to_excel(writer, index=False, sheet_name="Invoices")
     col_e2.download_button(
         label=t("export_excel", lang),
         data=excel_buf.getvalue(),
