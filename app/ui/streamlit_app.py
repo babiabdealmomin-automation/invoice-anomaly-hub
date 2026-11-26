@@ -41,6 +41,20 @@ from app.warehouse.repository import (
 )
 
 # ---------------------------------------------------------------------------
+# Multi-Currency & Regional Tax/Approval Profiles (SAR, AED, USD, EUR, DZD...)
+# ---------------------------------------------------------------------------
+CURRENCY_PROFILES: Dict[str, Dict[str, object]] = {
+    "SAR": {"symbol": "SAR", "default_vat": 15.0, "default_approval_limit": 100000.0, "step": 5000.0},
+    "AED": {"symbol": "AED", "default_vat": 5.0, "default_approval_limit": 100000.0, "step": 5000.0},
+    "USD": {"symbol": "USD", "default_vat": 0.0, "default_approval_limit": 25000.0, "step": 1000.0},
+    "EUR": {"symbol": "EUR", "default_vat": 20.0, "default_approval_limit": 25000.0, "step": 1000.0},
+    "DZD": {"symbol": "DZD", "default_vat": 19.0, "default_approval_limit": 3500000.0, "step": 100000.0},
+    "EGP": {"symbol": "EGP", "default_vat": 14.0, "default_approval_limit": 500000.0, "step": 25000.0},
+    "MAD": {"symbol": "MAD", "default_vat": 20.0, "default_approval_limit": 250000.0, "step": 10000.0},
+    "TND": {"symbol": "TND", "default_vat": 19.0, "default_approval_limit": 75000.0, "step": 5000.0},
+}
+
+# ---------------------------------------------------------------------------
 # Embedded Internationalization (i18n) Dictionary (AR / EN / FR)
 # ---------------------------------------------------------------------------
 SUPPORTED_LANGUAGES: Dict[str, str] = {
@@ -63,13 +77,16 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "new_isolated_session_btn": "🆕 بدء جلسة جديدة معزولة",
         "api_key_server_active": "🔒 مفتاح الخادم مفعّل ومعزول بأمان",
         "api_key_missing": "⚠️ مفتاح API غير مضبوط في إعدادات الخادم (Secrets)",
-        "price_spike_pct": "عتبة قفزة السعر (%)",
-        "near_duplicate_days": "نافذة الفواتير شبه المكررة والتجزئة (أيام)",
-        "procurement_threshold": "سقف الصفقات / المشتريات المرجعي (دج)",
+        "reporting_currency": "💱 عملة العرض والتقييم المالي",
+        "vat_rate_pct": "نسبة ضريبة القيمة المضافة القياسية (VAT %)",
+        "vat_tolerance_pct": "هامش التسامح في مطابقة الضريبة (%)",
+        "price_spike_pct": "عتبة ارتفاع سعر الوحدة (%)",
+        "near_duplicate_days": "نافذة رصد التكرار والتجزئة (بالأيام)",
+        "procurement_threshold": "سقف الاعتماد المالي المباشر ({currency})",
         "sidebar_warehouse": "🗄️ صيانة مستودع البيانات",
         "reset_warehouse_btn": "🗑️ إعادة تهيئة المستودع",
         "reset_warehouse_success": "تم تفريغ المستودع وإعادة تهيئته بنجاح.",
-        "sidebar_rule_weights": "⚖️ أوزان وتفعيل قواعد المخاطر",
+        "sidebar_rule_weights": "⚖️ أوزان وتفعيل قواعد التدقيق المحاسبي",
         "rule_weight": "وزن القاعدة: {label}",
         "section_ingest": "1. استيراد الفواتير (PDF / CSV / XLSX)",
         "upload_label": "ارفع ملفات الفواتير (PDF أو CSV أو XLSX)",
@@ -86,9 +103,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "section_overview": "2. نظرة عامة على المصروفات والمخاطر",
         "no_data_yet": "لا توجد فواتير مخزنة بعد. ارفع ملف PDF أو CSV أو XLSX أعلاه للبدء.",
         "kpi_total_invoices": "عدد الفواتير",
-        "kpi_total_spend": "إجمالي المصروفات",
-        "kpi_high_risk": "فواتير عالية الخطورة",
-        "kpi_total_discrepancy": "إجمالي الفروقات الحسابية",
+        "kpi_total_spend": "إجمالي المصروفات ({currency})",
+        "kpi_high_risk": "فواتير تتطلب مراجعة عاجلة",
+        "kpi_total_discrepancy": "إجمالي الفروقات الحسابية ({currency})",
+        "vat_audit_warning": "⚠️ تنبيه ضريبي: تم رصد {count} فاتورة يختلف فيها مبلغ ضريبة القيمة المضافة عن النسبة القياسية ({vat}%).",
         "spend_by_vendor": "المصروفات حسب المورّد",
         "vendor_risk_summary": "ملخص المخاطر والفروقات حسب المورّد",
         "filter_risk_level": "تصفية حسب مستوى الخطورة",
@@ -99,33 +117,30 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "export_csv": "⬇️ تحميل CSV",
         "export_excel": "⬇️ تحميل Excel (.xlsx)",
         "export_json": "⬇️ تحميل JSON",
-        "risk_LOW": "منخفض (LOW)",
-        "risk_MEDIUM": "متوسط (MEDIUM)",
-        "risk_HIGH": "مرتفع (HIGH)",
-        # Audit Rules (Labels)
-        "rule_ARITHMETIC_MISMATCH": "عدم تطابق حسابي",
-        "rule_PRICE_SPIKE": "قفزة سعرية غير مبررة",
-        "rule_NEAR_DUPLICATE_INVOICE": "فاتورة شبه مكررة",
-        "rule_SPLIT_INVOICE_PATTERN": "نمط تجزئة الفواتير",
-        "rule_HIGH_RISK_RED_FLAGS": "مؤشرات احتيال عالية الخطورة",
-        "rule_THIRD_PARTY_OR_OFFSHORE_PAYEE": "دفع لطرف ثالث أو حساب خارجي (Offshore)",
-        "rule_ROUND_HIGH_VALUE_TOTAL": "مبلغ إجمالي كبير ومستدير",
-        "rule_NIF_MISMATCH": "تعارض المعرف الجبائي (NIF)",
-        "rule_INVALID_NIF_FORMAT": "صيغة معرف جبائي (NIF) غير صالحة",
-        "rule_BANK_ACCOUNT_CHANGED": "تغيّر الحساب البنكي للمورّد",
-        "rule_NON_POSITIVE_GRAND_TOTAL": "مبلغ إجمالي صفري أو سالب",
-        # Audit Rules (Descriptions)
-        "desc_ARITHMETIC_MISMATCH": "وجود فرق حسابي بين (الكمية × سعر الوحدة) وإجمالي البند أو بين المجموع الفرعي والضرائب والمبلغ الإجمالي.",
-        "desc_PRICE_SPIKE": "ارتفاع سعر الوحدة عن المتوسط التاريخي لنفس المورّد بنسبة تتجاوز العتبة المحددة.",
-        "desc_NEAR_DUPLICATE_INVOICE": "رصد فاتورة أخرى لنفس المورّد بمبلغ متقارب جداً ضمن النافذة الزمنية المحددة.",
-        "desc_SPLIT_INVOICE_PATTERN": "احتمال تقسيم مشتريات إلى عدة فواتير متقاربة للبقاء تحت سقف الصفقات المعتمد.",
-        "desc_HIGH_RISK_RED_FLAGS": "وجود عبارات عالية الخطورة مثل غياب سند الطلب أو تعيينات مبهمة أو استعجال غير مبرر.",
-        "desc_THIRD_PARTY_OR_OFFSHORE_PAYEE": "توجيه الدفع إلى مستفيد طرف ثالث أو حسابات/جهات خارجية (Offshore) أو مناطق حرة.",
-        "desc_ROUND_HIGH_VALUE_TOTAL": "المبلغ الإجمالي مرتفع ومستدير تماماً مما يستدعي التحقق من التسعير الفعلي.",
-        "desc_NIF_MISMATCH": "اختلاف المعرف الجبائي (NIF) المسجل في الفاتورة عن المعرف التاريخي المعتمد للمورّد.",
-        "desc_INVALID_NIF_FORMAT": "صيغة المعرف الجبائي (NIF) لا تطابق البنية النظامية المطلوبة.",
-        "desc_BANK_ACCOUNT_CHANGED": "تغيّر رقم الحساب البنكي (RIB/IBAN) للمورّد مقارنة بالفواتير السابقة.",
-        "desc_NON_POSITIVE_GRAND_TOTAL": "المبلغ الإجمالي للفاتورة يساوي صفراً أو يحمل قيمة سالبة.",
+        # Audit Rules (Labels - Clear Commercial & Accounting Terminology)
+        "rule_ARITHMETIC_MISMATCH": "فرق في المطابقة الحسابية",
+        "rule_PRICE_SPIKE": "ارتفاع غير معتاد في سعر الوحدة",
+        "rule_NEAR_DUPLICATE_INVOICE": "اشتباه تكرار فاتورة لنفس المورّد",
+        "rule_SPLIT_INVOICE_PATTERN": "اشتباه تجزئة المشتريات لتجاوز سقف الاعتماد",
+        "rule_HIGH_RISK_RED_FLAGS": "مؤشرات رقابية تستوجب التحقق المستندي",
+        "rule_THIRD_PARTY_OR_OFFSHORE_PAYEE": "تحويل الدفع لطرف ثالث أو حساب خارجي",
+        "rule_ROUND_HIGH_VALUE_TOTAL": "مبلغ إجمالي مرتفع ومقرّب بالكامل",
+        "rule_NIF_MISMATCH": "اختلاف الرقم الضريبي عن سجل المورّد",
+        "rule_INVALID_NIF_FORMAT": "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة",
+        "rule_BANK_ACCOUNT_CHANGED": "تغيير بيانات الحساب البنكي للمورّد",
+        "rule_NON_POSITIVE_GRAND_TOTAL": "فاتورة بإجمالي صفري أو سالب",
+        # Audit Rules (Descriptions - Clear Commercial Explanations)
+        "desc_ARITHMETIC_MISMATCH": "عدم تطابق ناتج (الكمية × سعر الوحدة) مع إجمالي البند، أو اختلاف المجموع الفرعي وضريبة القيمة المضافة والخصم عن الإجمالي النهائي.",
+        "desc_PRICE_SPIKE": "تجاوز سعر الوحدة لمتوسط الأسعار التاريخية لنفس المورّد بنسبة تفوق الحد المسموح به.",
+        "desc_NEAR_DUPLICATE_INVOICE": "وجود فاتورة أخرى لنفس المورّد بمبلغ متقارب جداً خلال نافذة الأيام المحددة، مما يستدعي التأكد من عدم الازدواج.",
+        "desc_SPLIT_INVOICE_PATTERN": "تعدد الفواتير الصادرة من نفس المورّد خلال فترة وجيزة بما يوحي بتقسيم معاملة واحدة للبقاء دون سقف الاعتماد المالي.",
+        "desc_HIGH_RISK_RED_FLAGS": "ورود مؤشرات في وصف البنود أو الشروط تستدعي التدقيق (مثل غياب أمر الشراء، أو عمومية الوصف، أو طلب الصرف العاجل دون مبرر).",
+        "desc_THIRD_PARTY_OR_OFFSHORE_PAYEE": "توجيه السداد إلى مستفيد يختلف عن المورّد الأصلي أو إلى حسابات خارجية / مناطق حرة.",
+        "desc_ROUND_HIGH_VALUE_TOTAL": "قيمة الفاتورة مرتفعة ومقرّبة لأرقام صحيحة بالكامل، مما يتطلب مراجعة التسعير الفعلي والكميات.",
+        "desc_NIF_MISMATCH": "الرقم الضريبي المذكور في الفاتورة يختلف عن الرقم الضريبي المعتمد مسبقاً في ملف المورّد.",
+        "desc_INVALID_NIF_FORMAT": "الرقم الضريبي المسجل لا يطابق الصيغة النظامية المعتمدة (عدد الخانات أو البنية).",
+        "desc_BANK_ACCOUNT_CHANGED": "تغيّر رقم الحساب البنكي (IBAN / رقم الحساب) مقارنة ببيانات السداد السابقة للمورّد.",
+        "desc_NON_POSITIVE_GRAND_TOTAL": "المبلغ الإجمالي للفاتورة يساوي صفراً أو يحمل قيمة سالبة تتطلب تسوية.",
     },
     "en": {
         "app_title": "Invoice Spend & Anomaly Intelligence Hub",
@@ -140,13 +155,16 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "new_isolated_session_btn": "🆕 Start New Isolated Session",
         "api_key_server_active": "🔒 Server secret active & isolated",
         "api_key_missing": "⚠️ Server API key not configured in Secrets",
-        "price_spike_pct": "Price Spike Threshold (%)",
-        "near_duplicate_days": "Near-Duplicate & Split Window (Days)",
-        "procurement_threshold": "Procurement Threshold (DZD)",
+        "reporting_currency": "💱 Reporting & Audit Currency",
+        "vat_rate_pct": "Standard VAT Rate (%)",
+        "vat_tolerance_pct": "VAT Reconciliation Tolerance (%)",
+        "price_spike_pct": "Unit Price Increase Threshold (%)",
+        "near_duplicate_days": "Duplicate & Split Detection Window (Days)",
+        "procurement_threshold": "Direct Approval Limit ({currency})",
         "sidebar_warehouse": "🗄️ Warehouse Maintenance",
         "reset_warehouse_btn": "🗑️ Reset Warehouse",
         "reset_warehouse_success": "Warehouse cleared and reinitialized.",
-        "sidebar_rule_weights": "⚖️ Risk Rule Weights & Toggles",
+        "sidebar_rule_weights": "⚖️ Audit Rule Weights & Toggles",
         "rule_weight": "{label} Weight",
         "section_ingest": "1. Ingest Invoices (PDF / CSV / XLSX)",
         "upload_label": "Upload invoice PDF, CSV, or XLSX files",
@@ -163,9 +181,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "section_overview": "2. Spend & Risk Overview",
         "no_data_yet": "No invoices stored yet. Upload a PDF, CSV, or XLSX invoice file above to begin.",
         "kpi_total_invoices": "Total Invoices",
-        "kpi_total_spend": "Total Spend",
-        "kpi_high_risk": "High Risk Invoices",
-        "kpi_total_discrepancy": "Total Discrepancy",
+        "kpi_total_spend": "Total Spend ({currency})",
+        "kpi_high_risk": "High-Priority Review",
+        "kpi_total_discrepancy": "Total Math Variance ({currency})",
+        "vat_audit_warning": "⚠️ VAT Alert: {count} invoice(s) show a VAT amount deviating from the configured {vat}% standard rate.",
         "spend_by_vendor": "Spend by Vendor",
         "vendor_risk_summary": "Vendor Risk & Discrepancy Summary",
         "filter_risk_level": "Filter by Risk Level",
@@ -176,31 +195,28 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "export_csv": "⬇️ Download CSV",
         "export_excel": "⬇️ Download Excel (.xlsx)",
         "export_json": "⬇️ Download JSON",
-        "risk_LOW": "LOW",
-        "risk_MEDIUM": "MEDIUM",
-        "risk_HIGH": "HIGH",
-        "rule_ARITHMETIC_MISMATCH": "Arithmetic Mismatch",
-        "rule_PRICE_SPIKE": "Price Spike",
-        "rule_NEAR_DUPLICATE_INVOICE": "Near-Duplicate Invoice",
-        "rule_SPLIT_INVOICE_PATTERN": "Split-Invoice Pattern",
-        "rule_HIGH_RISK_RED_FLAGS": "High-Risk Red Flags",
-        "rule_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Third-Party / Offshore Payee",
-        "rule_ROUND_HIGH_VALUE_TOTAL": "Large Round Total",
-        "rule_NIF_MISMATCH": "NIF Mismatch",
-        "rule_INVALID_NIF_FORMAT": "Invalid NIF Format",
-        "rule_BANK_ACCOUNT_CHANGED": "Bank Account Changed",
-        "rule_NON_POSITIVE_GRAND_TOTAL": "Non-Positive Total",
-        "desc_ARITHMETIC_MISMATCH": "Mathematical discrepancy between (quantity × unit price) and line total, or subtotal/tax/discount vs. grand total.",
-        "desc_PRICE_SPIKE": "Unit price exceeds the vendor's historical average by more than the configured percentage threshold.",
-        "desc_NEAR_DUPLICATE_INVOICE": "Another invoice from the same vendor with a closely matching amount was found within the rolling time window.",
-        "desc_SPLIT_INVOICE_PATTERN": "Multiple invoices from the same vendor may have been split to remain below the procurement ceiling.",
-        "desc_HIGH_RISK_RED_FLAGS": "High-risk textual indicators detected (e.g., missing purchase order, vague descriptions, or unjustified urgency).",
-        "desc_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Payment directed to a third-party beneficiary, offshore entity/account, or free-zone jurisdiction.",
-        "desc_ROUND_HIGH_VALUE_TOTAL": "Unusually large, perfectly rounded invoice total warranting pricing verification.",
-        "desc_NIF_MISMATCH": "Invoice Tax ID (NIF) differs from the vendor's previously recorded Tax ID.",
-        "desc_INVALID_NIF_FORMAT": "Vendor Tax ID (NIF) does not conform to the expected regulatory format.",
-        "desc_BANK_ACCOUNT_CHANGED": "Vendor bank account details (RIB/IBAN) changed compared to historical records.",
-        "desc_NON_POSITIVE_GRAND_TOTAL": "Invoice grand total is zero or negative.",
+        "rule_ARITHMETIC_MISMATCH": "Calculation Variance",
+        "rule_PRICE_SPIKE": "Unusual Unit Price Increase",
+        "rule_NEAR_DUPLICATE_INVOICE": "Potential Duplicate Invoice",
+        "rule_SPLIT_INVOICE_PATTERN": "Potential Purchase Splitting",
+        "rule_HIGH_RISK_RED_FLAGS": "Supporting Document / Policy Alert",
+        "rule_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Third-Party or Cross-Border Payee",
+        "rule_ROUND_HIGH_VALUE_TOTAL": "High-Value Round Amount",
+        "rule_NIF_MISMATCH": "Tax ID Mismatch",
+        "rule_INVALID_NIF_FORMAT": "Invalid Tax ID Format",
+        "rule_BANK_ACCOUNT_CHANGED": "Vendor Bank Account Changed",
+        "rule_NON_POSITIVE_GRAND_TOTAL": "Zero or Negative Invoice Total",
+        "desc_ARITHMETIC_MISMATCH": "Line total does not match (quantity × unit price), or subtotal, VAT, and discounts do not reconcile with the grand total.",
+        "desc_PRICE_SPIKE": "Unit price exceeds the vendor's historical average by more than the configured threshold percentage.",
+        "desc_NEAR_DUPLICATE_INVOICE": "Another invoice from the same vendor with a closely matching amount was issued within the configured day window.",
+        "desc_SPLIT_INVOICE_PATTERN": "Multiple invoices from the same vendor within a short window appear split to stay below the direct approval limit.",
+        "desc_HIGH_RISK_RED_FLAGS": "Commercial terms or line descriptions indicate missing purchase orders, vague deliverables, or unsupported urgency.",
+        "desc_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Payment beneficiary differs from the contracting vendor or directs funds to an offshore/free-zone account.",
+        "desc_ROUND_HIGH_VALUE_TOTAL": "Large invoice total ending in exact round figures, warranting price and quantity verification.",
+        "desc_NIF_MISMATCH": "Tax registration number on the invoice differs from the vendor's verified tax ID on file.",
+        "desc_INVALID_NIF_FORMAT": "Tax registration number does not follow the required standard format.",
+        "desc_BANK_ACCOUNT_CHANGED": "Vendor bank account details (IBAN / account number) changed compared to prior approved invoices.",
+        "desc_NON_POSITIVE_GRAND_TOTAL": "Invoice grand total is zero or negative and requires accounting review.",
     },
     "fr": {
         "app_title": "Plateforme d'Audit des Factures et Détection d'Anomalies",
@@ -215,13 +231,16 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "new_isolated_session_btn": "🆕 Nouvelle session isolée",
         "api_key_server_active": "🔒 Clé serveur active et isolée",
         "api_key_missing": "⚠️ Clé API serveur non configurée dans Secrets",
-        "price_spike_pct": "Seuil de hausse de prix (%)",
+        "reporting_currency": "💱 Devise d'Audit et d'Affichage",
+        "vat_rate_pct": "Taux standard de TVA (%)",
+        "vat_tolerance_pct": "Tolérance d'écart TVA (%)",
+        "price_spike_pct": "Seuil de hausse du prix unitaire (%)",
         "near_duplicate_days": "Fenêtre doublons / fractionnement (jours)",
-        "procurement_threshold": "Seuil des marchés publics (DZD)",
+        "procurement_threshold": "Plafond d'approbation directe ({currency})",
         "sidebar_warehouse": "🗄️ Maintenance de l'Entrepôt",
         "reset_warehouse_btn": "🗑️ Réinitialiser l'Entrepôt",
         "reset_warehouse_success": "L'entrepôt a été vidé et réinitialisé avec succès.",
-        "sidebar_rule_weights": "⚖️ Pondération et Activation des Règles",
+        "sidebar_rule_weights": "⚖️ Pondération des Règles d'Audit",
         "rule_weight": "Poids : {label}",
         "section_ingest": "1. Importer des factures (PDF / CSV / XLSX)",
         "upload_label": "Téléverser des factures PDF, CSV ou XLSX",
@@ -238,44 +257,61 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "section_overview": "2. Aperçu des Dépenses et des Risques",
         "no_data_yet": "Aucune facture enregistrée. Téléversez un fichier PDF, CSV ou XLSX ci-dessus pour commencer.",
         "kpi_total_invoices": "Nombre de Factures",
-        "kpi_total_spend": "Dépenses Totales",
-        "kpi_high_risk": "Factures à Haut Risque",
-        "kpi_total_discrepancy": "Écart Arithmétique Total",
+        "kpi_total_spend": "Dépenses Totales ({currency})",
+        "kpi_high_risk": "Factures à Vérifier en Priorité",
+        "kpi_total_discrepancy": "Écart Comptable Total ({currency})",
+        "vat_audit_warning": "⚠️ Alerte TVA : {count} facture(s) présentent un montant de TVA s'écartant du taux standard de {vat}%.",
         "spend_by_vendor": "Dépenses par Fournisseur",
-        "vendor_risk_summary": "Synthèse des Risques et Écarts par Fournisseur",
-        "filter_risk_level": "Filtrer par niveau de risque",
-        "inspect_invoice_key": "Inspecter les lignes et notes d'audit pour la clé facture",
-        "audit_notes_prefix": "Notes d'audit",
-        "line_items_deviation": "Lignes de facture et écart de prix",
-        "section_exports": "3. Exports Propres",
-        "export_csv": "⬇️ Télécharger CSV",
-        "export_excel": "⬇️ Télécharger Excel (.xlsx)",
-        "export_json": "⬇️ Télécharger JSON",
-        "risk_LOW": "FAIBLE (LOW)",
-        "risk_MEDIUM": "MOYEN (MEDIUM)",
-        "risk_HIGH": "ÉLEVÉ (HIGH)",
-        "rule_ARITHMETIC_MISMATCH": "Écart arithmétique",
-        "rule_PRICE_SPIKE": "Hausse anormale de prix",
-        "rule_NEAR_DUPLICATE_INVOICE": "Facture quasi-dupliquée",
-        "rule_SPLIT_INVOICE_PATTERN": "Fractionnement de factures",
-        "rule_HIGH_RISK_RED_FLAGS": "Signaux d'alerte à haut risque",
-        "rule_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Bénéficiaire tiers / compte offshore",
-        "rule_ROUND_HIGH_VALUE_TOTAL": "Montant élevé arrondi",
-        "rule_NIF_MISMATCH": "Incohérence du NIF",
-        "rule_INVALID_NIF_FORMAT": "Format de NIF invalide",
-        "rule_BANK_ACCOUNT_CHANGED": "Changement de RIB/IBAN fournisseur",
-        "rule_NON_POSITIVE_GRAND_TOTAL": "Montant total nul ou négatif",
-        "desc_ARITHMETIC_MISMATCH": "Écart de calcul entre (quantité × prix unitaire) et le total ligne, ou entre HT/TVA/remise et TTC.",
-        "desc_PRICE_SPIKE": "Le prix unitaire dépasse la moyenne historique du fournisseur au-delà du seuil configuré.",
-        "desc_NEAR_DUPLICATE_INVOICE": "Une autre facture du même fournisseur avec un montant très proche a été détectée dans la fenêtre temporelle.",
-        "desc_SPLIT_INVOICE_PATTERN": "Possibilité de fractionnement des achats en plusieurs factures pour rester sous le seuil des marchés.",
-        "desc_HIGH_RISK_RED_FLAGS": "Indicateurs textuels à haut risque détectés (absence de bon de commande, libellés vagues, urgence injustifiée).",
-        "desc_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Paiement orienté vers un tiers bénéficiaire, une entité offshore ou une zone franche.",
-        "desc_ROUND_HIGH_VALUE_TOTAL": "Montant total élevé et parfaitement arrondi nécessitant une vérification tarifaire.",
-        "desc_NIF_MISMATCH": "Le NIF de la facture diffère du NIF historique enregistré pour ce fournisseur.",
-        "desc_INVALID_NIF_FORMAT": "Le format du NIF ne respecte pas la structure réglementaire attendue.",
-        "desc_BANK_ACCOUNT_CHANGED": "Les coordonnées bancaires (RIB/IBAN) du fournisseur ont changé par rapport à l'historique.",
-        "desc_NON_POSITIVE_GRAND_TOTAL": "Le montant total TTC de la facture est nul ou négatif.",
+        "rule_ARITHMETIC_MISMATCH": "Écart de calcul comptable",
+        "rule_PRICE_SPIKE": "Hausse inhabituelle du prix unitaire",
+        "rule_NEAR_DUPLICATE_INVOICE": "Suspicion de facture en double",
+        "rule_SPLIT_INVOICE_PATTERN": "Suspicion de fractionnement d'achat",
+        "rule_HIGH_RISK_RED_FLAGS": "Alerte justificatifs ou conformité commerciale",
+        "rule_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Bénéficiaire tiers ou compte étranger",
+        "rule_ROUND_HIGH_VALUE_TOTAL": "Montant élevé parfaitement arrondi",
+        "rule_NIF_MISMATCH": "Divergence d'identifiant fiscal",
+        "rule_INVALID_NIF_FORMAT": "Format d'identifiant fiscal invalide",
+        "rule_BANK_ACCOUNT_CHANGED": "Changement de coordonnées bancaires",
+        "rule_NON_POSITIVE_GRAND_TOTAL": "Total facture nul ou négatif",
+        "desc_ARITHMETIC_MISMATCH": "Le total ligne ne correspond pas à (quantité × prix unitaire), ou le total HT, la TVA et la remise ne concordent pas avec le TTC.",
+        "desc_PRICE_SPIKE": "Le prix unitaire dépasse la moyenne historique du fournisseur au-delà du pourcentage autorisé.",
+        "desc_NEAR_DUPLICATE_INVOICE": "Une autre facture du même fournisseur avec un montant très proche a été émise dans la fenêtre de jours configurée.",
+        "desc_SPLIT_INVOICE_PATTERN": "Plusieurs factures du même fournisseur sur une courte période suggèrent un fractionnement pour rester sous le plafond d'approbation.",
+        "desc_HIGH_RISK_RED_FLAGS": "Les conditions commerciales ou libellés signalent une absence de bon de commande, une description vague ou une urgence non justifiée.",
+        "desc_THIRD_PARTY_OR_OFFSHORE_PAYEE": "Le règlement est adressé à un tiers distinct du fournisseur ou vers une juridiction offshore / zone franche.",
+        "desc_ROUND_HIGH_VALUE_TOTAL": "Montant total élevé se terminant par des chiffres ronds, nécessitant une vérification des prix et quantités.",
+        "desc_NIF_MISMATCH": "L'identifiant fiscal figurant sur la facture diffère de celui enregistré dans la fiche fournisseur.",
+        "desc_INVALID_NIF_FORMAT": "L'identifiant fiscal ne respecte pas le format réglementaire attendu.",
+        "desc_BANK_ACCOUNT_CHANGED": "Les coordonnées bancaires (IBAN / RIB) ont changé par rapport aux factures précédentes.",
+        "desc_NON_POSITIVE_GRAND_TOTAL": "Le montant total TTC est nul ou négatif et nécessite une régularisation comptable.",
+    },
+}
+
+COLUMN_LABELS: Dict[str, Dict[str, str]] = {
+    "ar": {
+        "invoice_key": "رمز الفاتورة",
+        "invoice_number": "رقم الفاتورة",
+        "vendor_name": "اسم المورّد",
+        "invoice_date": "تاريخ الفاتورة",
+        "currency": "العملة",
+        "subtotal_amount": "المبلغ قبل الضريبة",
+        "tax_amount": "ضريبة القيمة المضافة (VAT)",
+        "discount_amount": "الخصم",
+        "grand_total_amount": "الإجمالي شامل الضريبة",
+        "discrepancy_amount": "الفرق الحسابي",
+        "risk_score": "درجة المخاطر",
+        "risk_level": "مستوى الأولوية",
+        "summary_notes": "ملاحظات المراجعة المحاسبية",
+        "total_spend": "إجمالي المصروفات",
+        "invoice_count": "عدد الفواتير",
+        "avg_risk_score": "متوسط المخاطر",
+        "total_discrepancy": "إجمالي الفروقات",
+        "description": "وصف البند",
+        "quantity": "الكمية",
+        "unit_price": "سعر الوحدة",
+        "line_total": "إجمالي البند",
+        "expected_line_total": "الإجمالي المحسوب",
+        "price_deviation_pct": "نسبة انحراف السعر (%)",
     },
 }
 
@@ -433,7 +469,6 @@ if "session_workspace_id" not in st.session_state:
 
 default_spike_pct = float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0))
 default_dup_days = int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7))
-default_proc_threshold = float(getattr(settings, "PROCUREMENT_THRESHOLD", 3500000.0))
 
 with st.sidebar:
     lang = st.selectbox(
@@ -479,6 +514,29 @@ with st.sidebar:
     else:
         st.warning(t("api_key_missing", lang))
 
+    selected_currency = st.selectbox(
+        t("reporting_currency", lang),
+        options=list(CURRENCY_PROFILES.keys()),
+        index=0,
+    )
+    curr_profile = CURRENCY_PROFILES[selected_currency]
+
+    vat_rate_pct = st.number_input(
+        t("vat_rate_pct", lang),
+        min_value=0.0,
+        max_value=50.0,
+        value=float(curr_profile["default_vat"]),
+        step=0.5,
+        key=f"vat_rate_{selected_currency}",
+    )
+    vat_tolerance_pct = st.slider(
+        t("vat_tolerance_pct", lang),
+        min_value=0.0,
+        max_value=5.0,
+        value=1.0,
+        step=0.5,
+    )
+
     spike_pct = st.slider(
         t("price_spike_pct", lang),
         min_value=5.0,
@@ -494,11 +552,12 @@ with st.sidebar:
         step=1,
     )
     proc_threshold = st.number_input(
-        t("procurement_threshold", lang),
-        min_value=10000.0,
-        max_value=100000000.0,
-        value=default_proc_threshold,
-        step=100000.0,
+        t("procurement_threshold", lang, currency=selected_currency),
+        min_value=100.0,
+        max_value=1000000000.0,
+        value=float(curr_profile["default_approval_limit"]),
+        step=float(curr_profile["step"]),
+        key=f"approval_limit_{selected_currency}",
     )
 
     st.divider()
@@ -665,18 +724,24 @@ df_invoices = normalize_and_validate_dataframe(
         "invoice_number",
         "vendor_name",
         "invoice_date",
+        "currency",
+        "subtotal_amount",
+        "tax_amount",
         "grand_total_amount",
         "discrepancy_amount",
         "risk_score",
         "risk_level",
         "summary_notes",
     ],
-    numeric_columns=["grand_total_amount", "discrepancy_amount", "risk_score"],
+    numeric_columns=["subtotal_amount", "tax_amount", "grand_total_amount", "discrepancy_amount", "risk_score"],
 )
 
 if df_invoices.empty:
     st.info(t("no_data_yet", lang))
 else:
+    # Fill missing currency with the active reporting currency for display consistency
+    df_invoices["currency"] = df_invoices["currency"].fillna(selected_currency).replace("", selected_currency)
+
     # Preserve NaN vs genuine 0.0: skipna=True ignores missing data instead of fabricating zeros
     total_spend_val = df_invoices["grand_total_amount"].sum(skipna=True)
     total_disc_val = df_invoices["discrepancy_amount"].abs().sum(skipna=True)
@@ -684,9 +749,24 @@ else:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(t("kpi_total_invoices", lang), len(df_invoices))
-    c2.metric(t("kpi_total_spend", lang), f"{total_spend_val:,.2f}" if pd.notna(total_spend_val) else "—")
+    c2.metric(
+        t("kpi_total_spend", lang, currency=selected_currency),
+        f"{total_spend_val:,.2f} {selected_currency}" if pd.notna(total_spend_val) else "—",
+    )
     c3.metric(t("kpi_high_risk", lang), high_risk_count)
-    c4.metric(t("kpi_total_discrepancy", lang), f"{total_disc_val:,.2f}" if pd.notna(total_disc_val) else "—")
+    c4.metric(
+        t("kpi_total_discrepancy", lang, currency=selected_currency),
+        f"{total_disc_val:,.2f} {selected_currency}" if pd.notna(total_disc_val) else "—",
+    )
+
+    # Dynamic VAT rate reconciliation check against configured VAT % (e.g., 15% SAR, 5% AED, 19% DZD)
+    valid_vat_rows = df_invoices.dropna(subset=["subtotal_amount", "tax_amount"])
+    valid_vat_rows = valid_vat_rows[valid_vat_rows["subtotal_amount"] > 0]
+    if not valid_vat_rows.empty:
+        effective_vat_pct = (valid_vat_rows["tax_amount"] / valid_vat_rows["subtotal_amount"]) * 100.0
+        vat_mismatches = valid_vat_rows[(effective_vat_pct - vat_rate_pct).abs() > vat_tolerance_pct]
+        if not vat_mismatches.empty:
+            st.warning(t("vat_audit_warning", lang, count=len(vat_mismatches), vat=f"{vat_rate_pct:g}"))
 
     raw_vendor_df = fetch_vendor_spend_dataframe(engine)
     vendor_df = normalize_and_validate_dataframe(
