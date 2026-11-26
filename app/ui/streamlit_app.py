@@ -2,9 +2,9 @@
 Streamlit interactive dashboard for Invoice Spend & Anomaly Intelligence Hub.
 Self-contained multilingual UI (Arabic with RTL, English, French) and
 Streamlit Community Cloud sys.path compatibility.
-"""
-
+import re
 import sys
+import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, Set
@@ -47,6 +47,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_title": "منصة ذكاء مصروفات الفواتير وكشف الشذوذ",
         "app_subtitle": "استخراج ذكي لملفات PDF • تدقيق حسابي حتمي • تصدير تقارير المستودع",
         "sidebar_settings": "⚙️ إعدادات التدقيق",
+        "sidebar_workspace_session": "🏢 مساحة العمل والجلسة المعزولة",
+        "workspace_mode": "وضع العزل",
+        "mode_isolated_session": "جلسة مستقلة تماماً (معزولة لكل مستخدم)",
+        "mode_named_workspace": "مساحة عمل مخصصة (حسب اسم القسم/المشروع)",
+        "workspace_name_input": "اسم مساحة العمل",
+        "active_workspace_badge": "مساحة العمل النشطة: {ws}",
+        "new_isolated_session_btn": "🆕 بدء جلسة جديدة معزولة",
         "gemini_api_key": "مفتاح Gemini API",
         "price_spike_pct": "عتبة قفزة السعر (%)",
         "near_duplicate_days": "نافذة الفواتير شبه المكررة والتجزئة (أيام)",
@@ -116,6 +123,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_title": "Invoice Spend & Anomaly Intelligence Hub",
         "app_subtitle": "Native PDF Document Intelligence • Deterministic Audit • Warehouse Exports",
         "sidebar_settings": "⚙️ Configuration",
+        "sidebar_workspace_session": "🏢 Workspace & Session Isolation",
+        "workspace_mode": "Isolation Mode",
+        "mode_isolated_session": "Isolated User Session (Private per browser)",
+        "mode_named_workspace": "Named Workspace (Department / Project)",
+        "workspace_name_input": "Workspace Name",
+        "active_workspace_badge": "Active Workspace: {ws}",
+        "new_isolated_session_btn": "🆕 Start New Isolated Session",
         "gemini_api_key": "Gemini API Key",
         "price_spike_pct": "Price Spike Threshold (%)",
         "near_duplicate_days": "Near-Duplicate & Split Window (Days)",
@@ -183,6 +197,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_title": "Plateforme d'Audit des Factures et Détection d'Anomalies",
         "app_subtitle": "Extraction native PDF • Audit arithmétique déterministe • Exports d'entrepôt",
         "sidebar_settings": "⚙️ Configuration",
+        "sidebar_workspace_session": "🏢 Espace de Travail & Session Isolée",
+        "workspace_mode": "Mode d'isolation",
+        "mode_isolated_session": "Session isolée (Privée par utilisateur)",
+        "mode_named_workspace": "Espace de travail nommé (Département / Projet)",
+        "workspace_name_input": "Nom de l'espace de travail",
+        "active_workspace_badge": "Espace actif : {ws}",
+        "new_isolated_session_btn": "🆕 Nouvelle session isolée",
         "gemini_api_key": "Clé API Gemini",
         "price_spike_pct": "Seuil de hausse de prix (%)",
         "near_duplicate_days": "Fenêtre doublons / fractionnement (jours)",
@@ -346,27 +367,27 @@ def get_direction_css(lang: str = "ar") -> str:
             }
             .stDataFrame {
                 direction: rtl;
-            }
-        </style>
-        """
-    return """
-    <style>
-        .stApp, .stSidebar, [data-testid="stAppViewContainer"] {
-            direction: ltr;
-            text-align: left;
-        }
-    </style>
-    """
+def sanitize_workspace_slug(raw_name: str) -> str:
+    """Convert any workspace name into a safe filesystem slug."""
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", raw_name.strip()).strip("_").lower()
+    return cleaned[:48] if cleaned else "default"
+
+
+def resolve_workspace_database_url(workspace_slug: str) -> str:
+    """Build an isolated SQLite database URL inside data/workspaces/."""
+    workspaces_dir = ROOT_DIR / "data" / "workspaces"
+    workspaces_dir.mkdir(parents=True, exist_ok=True)
+    db_file = (workspaces_dir / f"ws_{workspace_slug}.db").resolve()
+    return f"sqlite:///{db_file.as_posix()}"
 
 
 # ---------------------------------------------------------------------------
-# Page Setup, Database Initialization & Sidebar Controls
+# Page Setup, Session/Workspace Isolation & Sidebar Controls
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
 
-engine = build_engine(settings.DATABASE_URL)
-init_schema(engine)
-SessionLocal = build_session_factory(engine)
+if "session_workspace_id" not in st.session_state:
+    st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
 
 try:
     default_api_key = st.secrets.get("GEMINI_API_KEY", getattr(settings, "GEMINI_API_KEY", ""))
@@ -384,6 +405,31 @@ with st.sidebar:
         index=0,
         format_func=lambda code: SUPPORTED_LANGUAGES[code],
     )
+    st.divider()
+    st.subheader(t("sidebar_workspace_session", lang))
+    ws_mode = st.radio(
+        t("workspace_mode", lang),
+        options=["isolated", "named"],
+        format_func=lambda m: t("mode_isolated_session", lang) if m == "isolated" else t("mode_named_workspace", lang),
+        label_visibility="collapsed",
+    )
+
+    if ws_mode == "isolated":
+        active_ws_slug = st.session_state["session_workspace_id"]
+        if st.button(t("new_isolated_session_btn", lang), use_container_width=True):
+            st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
+            st.rerun()
+    else:
+        raw_ws_name = st.text_input(t("workspace_name_input", lang), value="audit_team_1")
+        active_ws_slug = sanitize_workspace_slug(raw_ws_name)
+
+    st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
+
+    workspace_db_url = resolve_workspace_database_url(active_ws_slug)
+    engine = build_engine(workspace_db_url)
+    init_schema(engine)
+    SessionLocal = build_session_factory(engine)
+
     st.divider()
     st.header(t("sidebar_settings", lang))
     api_key_input = st.text_input(t("gemini_api_key", lang), value=default_api_key, type="password")
