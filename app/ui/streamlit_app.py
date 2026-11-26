@@ -117,6 +117,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "export_csv": "⬇️ تحميل CSV",
         "export_excel": "⬇️ تحميل Excel (.xlsx)",
         "export_json": "⬇️ تحميل JSON",
+        "reset_defaults_btn": "🔄 استعادة الإعدادات الافتراضية",
+        "reset_defaults_done": "تمت استعادة جميع العتبات والأوزان الافتراضية.",
+        "risk_LOW": "منخفض (LOW)",
+        "risk_MEDIUM": "متوسط (MEDIUM)",
+        "risk_HIGH": "مرتفع (HIGH)",
         # Audit Rules (Labels - Clear Commercial & Accounting Terminology)
         "rule_ARITHMETIC_MISMATCH": "فرق في المطابقة الحسابية",
         "rule_PRICE_SPIKE": "ارتفاع غير معتاد في سعر الوحدة",
@@ -195,6 +200,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "export_csv": "⬇️ Download CSV",
         "export_excel": "⬇️ Download Excel (.xlsx)",
         "export_json": "⬇️ Download JSON",
+        "reset_defaults_btn": "🔄 Reset to Default Settings",
+        "reset_defaults_done": "All thresholds and rule weights restored to defaults.",
+        "risk_LOW": "LOW",
+        "risk_MEDIUM": "MEDIUM",
+        "risk_HIGH": "HIGH",
         "rule_ARITHMETIC_MISMATCH": "Calculation Variance",
         "rule_PRICE_SPIKE": "Unusual Unit Price Increase",
         "rule_NEAR_DUPLICATE_INVOICE": "Potential Duplicate Invoice",
@@ -254,14 +264,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "duplicate_summary": "⚠️ {skipped} fichier(s) en double ignoré(s) automatiquement pour protéger l'entrepôt.",
         "file_error": "Échec du traitement du fichier « {filename} » : {err}",
         "error_prefix": "Erreur",
-        "section_overview": "2. Aperçu des Dépenses et des Risques",
-        "no_data_yet": "Aucune facture enregistrée. Téléversez un fichier PDF, CSV ou XLSX ci-dessus pour commencer.",
-        "kpi_total_invoices": "Nombre de Factures",
-        "kpi_total_spend": "Dépenses Totales ({currency})",
-        "kpi_high_risk": "Factures à Vérifier en Priorité",
-        "kpi_total_discrepancy": "Écart Comptable Total ({currency})",
-        "vat_audit_warning": "⚠️ Alerte TVA : {count} facture(s) présentent un montant de TVA s'écartant du taux standard de {vat}%.",
-        "spend_by_vendor": "Dépenses par Fournisseur",
+        "export_csv": "⬇️ Télécharger CSV",
+        "export_excel": "⬇️ Télécharger Excel (.xlsx)",
+        "export_json": "⬇️ Télécharger JSON",
+        "reset_defaults_btn": "🔄 Restaurer les paramètres par défaut",
+        "reset_defaults_done": "Tous les seuils et poids des règles ont été restaurés.",
+        "risk_LOW": "FAIBLE (LOW)",
+        "risk_MEDIUM": "MOYEN (MEDIUM)",
+        "risk_HIGH": "ÉLEVÉ (HIGH)",
         "rule_ARITHMETIC_MISMATCH": "Écart de calcul comptable",
         "rule_PRICE_SPIKE": "Hausse inhabituelle du prix unitaire",
         "rule_NEAR_DUPLICATE_INVOICE": "Suspicion de facture en double",
@@ -398,30 +408,130 @@ def localize_columns(df: pd.DataFrame, lang: str) -> pd.DataFrame:
     return df.rename(columns=COLUMN_LABELS[lang])
 
 
-def get_direction_css(lang: str = "ar") -> str:
-    """Return CSS for RTL layout in Arabic and LTR layout in English/French."""
+def localize_audit_notes(note_text: object, lang: str = "ar") -> str:
+    """
+    Translate engine-generated audit summary notes and pass/fail checks
+    into clear Arabic or French accounting terminology when requested.
+    """
+    if note_text is None or (isinstance(note_text, float) and pd.isna(note_text)):
+        return "—"
+    raw = str(note_text).strip()
+    if not raw:
+        return "—"
+    if lang == "en":
+        return raw
+
     if lang == "ar":
-        return """
-        <style>
-            .stApp, .stSidebar, [data-testid="stAppViewContainer"] {
-                direction: rtl;
-                text-align: right;
-            }
-            [data-testid="stMetricValue"], [data-testid="stMetricDelta"] {
-                direction: ltr;
-                text-align: right;
-            }
-            .stDataFrame {
-                direction: rtl;
-            }
-        </style>
-        """
-    return """
+        replacements = [
+            (r"(?i)\ball deterministic checks passed\.?\b", "اجتازت الفاتورة جميع فحوصات المطابقة الحسابية والرقابية بنجاح."),
+            (r"(?i)\bno anomalies detected\.?\b", "لم يتم رصد أي انحرافات أو مؤشرات مخاطر."),
+            (r"(?i)\bclean invoice\.?\b", "فاتورة سليمة ومطابقة محاسبياً."),
+            (r"(?i)\barithmetic mismatch\b", "فرق في المطابقة الحسابية"),
+            (r"(?i)\bprice spike\b", "ارتفاع غير معتاد في سعر الوحدة"),
+            (r"(?i)\bnear[- ]duplicate invoice\b", "اشتباه تكرار فاتورة لنفس المورّد"),
+            (r"(?i)\bsplit[- ]invoice pattern\b", "اشتباه تجزئة المشتريات لتجاوز سقف الاعتماد"),
+            (r"(?i)\bhigh[- ]risk red flags\b", "مؤشرات رقابية تستوجب التحقق المستندي"),
+            (r"(?i)\bthird[- ]party or offshore payee\b", "تحويل الدفع لطرف ثالث أو حساب خارجي"),
+            (r"(?i)\bround high[- ]value total\b", "مبلغ إجمالي مرتفع ومقرّب بالكامل"),
+            (r"(?i)\bnif mismatch\b", "اختلاف الرقم الضريبي عن سجل المورّد"),
+            (r"(?i)\binvalid nif format\b", "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة"),
+            (r"(?i)\bbank account changed\b", "تغيير بيانات الحساب البنكي للمورّد"),
+            (r"(?i)\bnon[- ]positive grand total\b", "فاتورة بإجمالي صفري أو سالب"),
+            (r"(?i)\bdiscrepancy of\b", "بفارق حسابي قدره"),
+            (r"(?i)\bexceeds historical average by\b", "يتجاوز متوسط السعر التاريخي بنسبة"),
+            (r"(?i)\bwithin\s+(\d+)\s+days\b", r"خلال \1 يوم/أيام"),
+        ]
+        translated = raw
+        for pattern, repl in replacements:
+            translated = re.sub(pattern, repl, translated)
+        return translated
+
+    if lang == "fr":
+        replacements_fr = [
+            (r"(?i)\ball deterministic checks passed\.?\b", "Tous les contrôles arithmétiques et réglementaires ont réussi."),
+            (r"(?i)\bno anomalies detected\.?\b", "Aucune anomalie détectée."),
+            (r"(?i)\bclean invoice\.?\b", "Facture conforme."),
+            (r"(?i)\barithmetic mismatch\b", "Écart de calcul comptable"),
+            (r"(?i)\bprice spike\b", "Hausse inhabituelle du prix unitaire"),
+            (r"(?i)\bnear[- ]duplicate invoice\b", "Suspicion de facture en double"),
+            (r"(?i)\bsplit[- ]invoice pattern\b", "Suspicion de fractionnement d'achat"),
+        ]
+        translated = raw
+        for pattern, repl in replacements_fr:
+            translated = re.sub(pattern, repl, translated)
+        return translated
+
+    return raw
+
+
+def get_direction_css(lang: str = "ar") -> str:
+    """
+    Return responsive CSS for:
+    - Clean RTL/LTR alignment
+    - 2x2 responsive KPI grid on mobile screens without number truncation
+    - Touch-friendly spacing for filter tags/pills
+    - Hiding Streamlit staging/deploy chrome & footer badges
+    """
+    dir_rule = "direction: rtl; text-align: right;" if lang == "ar" else "direction: ltr; text-align: left;"
+    metric_align = "right" if lang == "ar" else "left"
+    return f"""
     <style>
-        .stApp, .stSidebar, [data-testid="stAppViewContainer"] {
+        /* Hide Streamlit staging badges, Deploy button, and default footer */
+        #MainMenu {{visibility: hidden;}}
+        footer {{visibility: hidden;}}
+        .stDeployButton, [data-testid="stToolbar"] {{display: none !important;}}
+
+        .stApp, .stSidebar, [data-testid="stAppViewContainer"] {{
+            {dir_rule}
+        }}
+
+        /* Prevent metric number truncation and enforce crisp typography */
+        [data-testid="stMetric"] {{
+            background: rgba(128, 128, 128, 0.06);
+            border: 1px solid rgba(128, 128, 128, 0.18);
+            border-radius: 12px;
+            padding: 0.85rem 1rem;
+        }}
+        [data-testid="stMetricLabel"] p {{
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            font-size: 0.9rem !important;
+        }}
+        [data-testid="stMetricValue"] {{
             direction: ltr;
-            text-align: left;
-        }
+            text-align: {metric_align};
+            white-space: nowrap !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            font-size: clamp(1.05rem, 2.2vw, 1.55rem) !important;
+        }}
+
+        /* Responsive 2x2 KPI card grid on mobile & tablet screens */
+        @media (max-width: 768px) {{
+            [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {{
+                display: grid !important;
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                gap: 0.65rem !important;
+            }}
+            [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > div {{
+                width: 100% !important;
+                min-width: 0 !important;
+            }}
+        }}
+
+        /* Touch-friendly spacing for multiselect filter tags / pills */
+        [data-baseweb="tag"] {{
+            margin: 4px 6px !important;
+            padding: 4px 10px !important;
+            border-radius: 8px !important;
+            font-size: 0.9rem !important;
+        }}
+        [data-baseweb="select"] > div {{
+            gap: 6px !important;
+            padding-top: 4px !important;
+            padding-bottom: 4px !important;
+        }}
     </style>
     """
 
@@ -470,6 +580,21 @@ if "session_workspace_id" not in st.session_state:
 default_spike_pct = float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0))
 default_dup_days = int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7))
 
+
+def _reset_sidebar_defaults() -> None:
+    """Restore all audit sliders, thresholds, and rule weights to factory defaults."""
+    st.session_state["cfg_currency"] = "SAR"
+    for curr_code, prof in CURRENCY_PROFILES.items():
+        st.session_state[f"vat_rate_{curr_code}"] = float(prof["default_vat"])
+        st.session_state[f"approval_limit_{curr_code}"] = float(prof["default_approval_limit"])
+    st.session_state["cfg_vat_tol"] = 1.0
+    st.session_state["cfg_spike_pct"] = default_spike_pct
+    st.session_state["cfg_dup_days"] = default_dup_days
+    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
+        st.session_state[f"rule_en_{rule_key}"] = True
+        st.session_state[f"rule_w_{rule_key}"] = int(default_w)
+
+
 with st.sidebar:
     lang = st.selectbox(
         "🌐 اللغة / Language / Langue",
@@ -477,25 +602,31 @@ with st.sidebar:
         index=0,
         format_func=lambda code: SUPPORTED_LANGUAGES[code],
     )
-    st.divider()
-    st.subheader(t("sidebar_workspace_session", lang))
-    ws_mode = st.radio(
-        t("workspace_mode", lang),
-        options=["isolated", "named"],
-        format_func=lambda m: t("mode_isolated_session", lang) if m == "isolated" else t("mode_named_workspace", lang),
-        label_visibility="collapsed",
-    )
 
-    if ws_mode == "isolated":
-        active_ws_slug = st.session_state["session_workspace_id"]
-        if st.button(t("new_isolated_session_btn", lang), use_container_width=True):
-            st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
-            st.rerun()
-    else:
-        raw_ws_name = st.text_input(t("workspace_name_input", lang), value="audit_team_1")
-        active_ws_slug = sanitize_workspace_slug(raw_ws_name)
+    if st.button(t("reset_defaults_btn", lang), use_container_width=True):
+        _reset_sidebar_defaults()
+        st.toast(t("reset_defaults_done", lang))
+        st.rerun()
 
-    st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
+    # 1. Collapsible Workspace & Session Isolation
+    with st.expander(t("sidebar_workspace_session", lang), expanded=False):
+        ws_mode = st.radio(
+            t("workspace_mode", lang),
+            options=["isolated", "named"],
+            format_func=lambda m: t("mode_isolated_session", lang) if m == "isolated" else t("mode_named_workspace", lang),
+            label_visibility="collapsed",
+        )
+
+        if ws_mode == "isolated":
+            active_ws_slug = st.session_state["session_workspace_id"]
+            if st.button(t("new_isolated_session_btn", lang), use_container_width=True):
+                st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
+                st.rerun()
+        else:
+            raw_ws_name = st.text_input(t("workspace_name_input", lang), value="audit_team_1")
+            active_ws_slug = sanitize_workspace_slug(raw_ws_name)
+
+        st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
 
     workspace_db_url = resolve_workspace_database_url(active_ws_slug)
     engine = build_engine(workspace_db_url)
@@ -504,89 +635,91 @@ with st.sidebar:
     ensure_composite_audit_indexes(engine)
     SessionLocal = build_session_factory(engine)
 
-    st.divider()
-    st.header(t("sidebar_settings", lang))
-
-    # Server-only secret resolution: no client-side API key input field is rendered
-    effective_api_key = _get_server_gemini_key()
-    if effective_api_key:
-        st.caption(t("api_key_server_active", lang))
-    else:
-        st.warning(t("api_key_missing", lang))
-
-    selected_currency = st.selectbox(
-        t("reporting_currency", lang),
-        options=list(CURRENCY_PROFILES.keys()),
-        index=0,
-    )
-    curr_profile = CURRENCY_PROFILES[selected_currency]
-
-    vat_rate_pct = st.number_input(
-        t("vat_rate_pct", lang),
-        min_value=0.0,
-        max_value=50.0,
-        value=float(curr_profile["default_vat"]),
-        step=0.5,
-        key=f"vat_rate_{selected_currency}",
-    )
-    vat_tolerance_pct = st.slider(
-        t("vat_tolerance_pct", lang),
-        min_value=0.0,
-        max_value=5.0,
-        value=1.0,
-        step=0.5,
-    )
-
-    spike_pct = st.slider(
-        t("price_spike_pct", lang),
-        min_value=5.0,
-        max_value=100.0,
-        value=default_spike_pct,
-        step=5.0,
-    )
-    dup_days = st.slider(
-        t("near_duplicate_days", lang),
-        min_value=1,
-        max_value=30,
-        value=default_dup_days,
-        step=1,
-    )
-    proc_threshold = st.number_input(
-        t("procurement_threshold", lang, currency=selected_currency),
-        min_value=100.0,
-        max_value=1000000000.0,
-        value=float(curr_profile["default_approval_limit"]),
-        step=float(curr_profile["step"]),
-        key=f"approval_limit_{selected_currency}",
-    )
-
-    st.divider()
-    st.subheader(t("sidebar_warehouse", lang))
-    if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
-        reset_warehouse(engine)
-        ensure_composite_audit_indexes(engine)
-        st.success(t("reset_warehouse_success", lang))
-        st.rerun()
-
-    st.divider()
-    st.subheader(t("sidebar_rule_weights", lang))
-    active_weights: Dict[str, int] = {}
-    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
-        label = get_rule_label(rule_key, lang)
-        desc = get_rule_description(rule_key, lang)
-        enabled = st.checkbox(label, value=True, key=f"rule_en_{rule_key}", help=desc)
-        if enabled:
-            w_val = st.slider(
-                t("rule_weight", lang, label=label),
-                min_value=0,
-                max_value=60,
-                value=int(default_w),
-                step=5,
-                key=f"rule_w_{rule_key}",
-            )
-            active_weights[rule_key] = int(w_val)
+    # 2. Collapsible Audit Thresholds & Currency Configuration
+    with st.expander(t("sidebar_settings", lang), expanded=True):
+        effective_api_key = _get_server_gemini_key()
+        if effective_api_key:
+            st.caption(t("api_key_server_active", lang))
         else:
-            active_weights[rule_key] = 0
+            st.warning(t("api_key_missing", lang))
+
+        selected_currency = st.selectbox(
+            t("reporting_currency", lang),
+            options=list(CURRENCY_PROFILES.keys()),
+            index=0,
+            key="cfg_currency",
+        )
+        curr_profile = CURRENCY_PROFILES[selected_currency]
+
+        vat_rate_pct = st.number_input(
+            t("vat_rate_pct", lang),
+            min_value=0.0,
+            max_value=50.0,
+            value=float(curr_profile["default_vat"]),
+            step=0.5,
+            key=f"vat_rate_{selected_currency}",
+        )
+        vat_tolerance_pct = st.slider(
+            t("vat_tolerance_pct", lang),
+            min_value=0.0,
+            max_value=5.0,
+            value=1.0,
+            step=0.5,
+            key="cfg_vat_tol",
+        )
+
+        spike_pct = st.slider(
+            t("price_spike_pct", lang),
+            min_value=5.0,
+            max_value=100.0,
+            value=default_spike_pct,
+            step=5.0,
+            key="cfg_spike_pct",
+        )
+        dup_days = st.slider(
+            t("near_duplicate_days", lang),
+            min_value=1,
+            max_value=30,
+            value=default_dup_days,
+            step=1,
+            key="cfg_dup_days",
+        )
+        proc_threshold = st.number_input(
+            t("procurement_threshold", lang, currency=selected_currency),
+            min_value=100.0,
+            max_value=1000000000.0,
+            value=float(curr_profile["default_approval_limit"]),
+            step=float(curr_profile["step"]),
+            key=f"approval_limit_{selected_currency}",
+        )
+
+    # 3. Collapsible Audit Rule Weights & Toggles
+    with st.expander(t("sidebar_rule_weights", lang), expanded=False):
+        active_weights: Dict[str, int] = {}
+        for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
+            label = get_rule_label(rule_key, lang)
+            desc = get_rule_description(rule_key, lang)
+            enabled = st.checkbox(label, value=True, key=f"rule_en_{rule_key}", help=desc)
+            if enabled:
+                w_val = st.slider(
+                    t("rule_weight", lang, label=label),
+                    min_value=0,
+                    max_value=60,
+                    value=int(default_w),
+                    step=5,
+                    key=f"rule_w_{rule_key}",
+                )
+                active_weights[rule_key] = int(w_val)
+            else:
+                active_weights[rule_key] = 0
+
+    # 4. Collapsible Warehouse Maintenance
+    with st.expander(t("sidebar_warehouse", lang), expanded=False):
+        if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
+            reset_warehouse(engine)
+            ensure_composite_audit_indexes(engine)
+            st.success(t("reset_warehouse_success", lang))
+            st.rerun()
 
 st.markdown(get_direction_css(lang), unsafe_allow_html=True)
 st.title(t("app_title", lang))
@@ -741,6 +874,8 @@ if df_invoices.empty:
 else:
     # Fill missing currency with the active reporting currency for display consistency
     df_invoices["currency"] = df_invoices["currency"].fillna(selected_currency).replace("", selected_currency)
+    # Localize engine audit summary notes into the active UI language
+    df_invoices["summary_notes"] = df_invoices["summary_notes"].apply(lambda txt: localize_audit_notes(txt, lang))
 
     # Preserve NaN vs genuine 0.0: skipna=True ignores missing data instead of fabricating zeros
     total_spend_val = df_invoices["grand_total_amount"].sum(skipna=True)
@@ -783,7 +918,12 @@ else:
                 st.bar_chart(chart_df.set_index("vendor_name")["total_spend"])
         with col_v2:
             st.markdown(f"**{t('vendor_risk_summary', lang)}**")
-            st.dataframe(localize_columns(vendor_df, lang), use_container_width=True)
+            localized_vendor_df = localize_columns(vendor_df, lang)
+            vendor_col_cfg = {
+                col: st.column_config.TextColumn(width="medium")
+                for col in localized_vendor_df.columns
+            }
+            st.dataframe(localized_vendor_df, use_container_width=True, column_config=vendor_col_cfg)
 
     risk_filter = st.multiselect(
         t("filter_risk_level", lang),
@@ -793,7 +933,12 @@ else:
     )
     normalized_risk_series = df_invoices["risk_level"].fillna("").astype(str).str.upper()
     filtered_df = df_invoices[normalized_risk_series.isin(risk_filter)] if risk_filter else df_invoices
-    st.dataframe(localize_columns(filtered_df, lang), use_container_width=True)
+    localized_invoices_df = localize_columns(filtered_df, lang)
+    invoice_col_cfg = {
+        col: st.column_config.TextColumn(width="medium")
+        for col in localized_invoices_df.columns
+    }
+    st.dataframe(localized_invoices_df, use_container_width=True, column_config=invoice_col_cfg)
 
     valid_keys = filtered_df["invoice_key"].dropna().tolist()
     selected_key = st.selectbox(
@@ -813,22 +958,12 @@ else:
             required_columns=["description", "quantity", "unit_price", "line_total"],
             numeric_columns=["quantity", "unit_price", "line_total", "expected_line_total", "price_deviation_pct"],
         )
-        st.dataframe(localize_columns(lines_df, lang), use_container_width=True)
-
-    # -----------------------------------------------------------------------
-    # Section 3: Clean Exports
-    # -----------------------------------------------------------------------
-    st.subheader(t("section_exports", lang))
-    col_e1, col_e2, col_e3 = st.columns(3)
-    col_e1.download_button(
-        label=t("export_csv", lang),
-        data=filtered_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="invoices_intelligence.csv",
-        mime="text/csv",
-    )
-    excel_buf = BytesIO()
-    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
-        filtered_df.to_excel(writer, index=False, sheet_name="Invoices")
+        localized_lines_df = localize_columns(lines_df, lang)
+        lines_col_cfg = {
+            col: st.column_config.TextColumn(width="medium")
+            for col in localized_lines_df.columns
+        }
+        st.dataframe(localized_lines_df, use_container_width=True, column_config=lines_col_cfg)
     col_e2.download_button(
         label=t("export_excel", lang),
         data=excel_buf.getvalue(),
