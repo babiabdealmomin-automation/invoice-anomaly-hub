@@ -443,7 +443,6 @@ def localize_audit_notes(
 
     raw = "" if (note_text is None or (isinstance(note_text, float) and pd.isna(note_text))) else str(note_text).strip()
 
-    # Build explicit accounting variance breakdown when math, VAT, or future-date discrepancies exist
     accounting_details: list[str] = []
 
     raw_issue_date = ctx.get("issue_date") if pd.notna(ctx.get("issue_date")) else ctx.get("invoice_date")
@@ -529,6 +528,7 @@ def localize_audit_notes(
             (r"(?i)no anomalies(?: or red flags)? detected\.?", "لم يتم رصد أي انحرافات أو مؤشرات مخاطر."),
             (r"(?i)no issues found\.?", "لا توجد ملاحظات أو مخالفات محاسبية."),
             (r"(?i)clean invoice\.?", "فاتورة سليمة ومطابقة محاسبياً."),
+            (r"(?i)future issue date exceeds current date\.?", "تاريخ إصدار الفاتورة يتعدى اليوم الحالي."),
             (r"(?i)arithmetic mismatch", "فرق في المطابقة الحسابية"),
             (r"(?i)price spike", "ارتفاع غير معتاد في سعر الوحدة"),
             (r"(?i)near[- ]duplicate invoice", "اشتباه تكرار فاتورة لنفس المورّد"),
@@ -557,6 +557,7 @@ def localize_audit_notes(
             (r"(?i)all checks passed\.?", "Tous les contrôles ont réussi."),
             (r"(?i)no anomalies(?: or red flags)? detected\.?", "Aucune anomalie détectée."),
             (r"(?i)clean invoice\.?", "Facture conforme."),
+            (r"(?i)future issue date exceeds current date\.?", "La date d'émission de la facture dépasse la date du jour."),
             (r"(?i)arithmetic mismatch", "Écart de calcul comptable"),
             (r"(?i)price spike", "Hausse inhabituelle du prix unitaire"),
             (r"(?i)near[- ]duplicate invoice", "Suspicion de facture en double"),
@@ -786,6 +787,52 @@ def enforce_future_date_audit_flag(session, invoice_key: int | None, is_future: 
     if flag_note not in existing_notes:
         record.summary_notes = f"{existing_notes} | {flag_note}".strip(" |")
     session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Page Setup, Session Initialization & Sidebar Controls
+# ---------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Invoice Spend & Anomaly Hub",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+if "session_workspace_id" not in st.session_state:
+    st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
+
+default_spike_pct = float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0))
+default_dup_days = int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7))
+
+with st.sidebar:
+    lang = st.selectbox(
+        "🌐 Language / اللغة / Langue",
+        options=list(SUPPORTED_LANGUAGES.keys()),
+        index=0,
+        format_func=lambda code: SUPPORTED_LANGUAGES[code],
+    )
+
+    if st.button(t("reset_defaults_btn", lang), use_container_width=True):
+        keys_to_clear = [
+            k
+            for k in st.session_state.keys()
+            if k.startswith(("cfg_", "vat_rate_", "approval_limit_", "rule_en_", "rule_w_"))
+        ]
+        for k in keys_to_clear:
+            del st.session_state[k]
+        st.toast(t("reset_defaults_done", lang))
+        st.rerun()
+
+    st.divider()
+
+    # 1. Workspace & Session Isolation
+    with st.expander(t("sidebar_workspace_session", lang), expanded=False):
+        ws_mode = st.radio(
+            t("workspace_mode", lang),
+            options=["isolated", "named"],
+            format_func=lambda m: (
+                t("mode_isolated_session", lang) if m == "isolated" else t("mode_named_workspace", lang)
+            ),
         )
 
         if ws_mode == "isolated":
