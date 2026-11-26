@@ -26,6 +26,11 @@ from app.extraction.pdf_reader import compute_sha256
 from app.extraction.tabular_importer import parse_tabular_invoices
 from app.intelligence.audit_engine import DEFAULT_RULE_WEIGHTS
 from app.warehouse.models import FactInvoice, build_engine, build_session_factory
+from app.warehouse.db_hardening import (
+    configure_sqlite_wal_and_timeout,
+    ensure_composite_audit_indexes,
+    normalize_and_validate_dataframe,
+)
 from app.warehouse.repository import (
     fetch_invoices_dataframe,
     fetch_lines_for_invoice,
@@ -396,7 +401,7 @@ def resolve_workspace_database_url(workspace_slug: str) -> str:
     workspaces_dir = ROOT_DIR / "data" / "workspaces"
     workspaces_dir.mkdir(parents=True, exist_ok=True)
     db_file = (workspaces_dir / f"ws_{workspace_slug}.db").resolve()
-    return f"sqlite:///{db_file.as_posix()}"
+    return f"sqlite:///{db_file.as_posix()}?timeout=30.0"
 
 
 def _get_server_gemini_key() -> str:
@@ -459,7 +464,9 @@ with st.sidebar:
 
     workspace_db_url = resolve_workspace_database_url(active_ws_slug)
     engine = build_engine(workspace_db_url)
+    configure_sqlite_wal_and_timeout(engine, timeout_seconds=30.0)
     init_schema(engine)
+    ensure_composite_audit_indexes(engine)
     SessionLocal = build_session_factory(engine)
 
     st.divider()
@@ -498,6 +505,7 @@ with st.sidebar:
     st.subheader(t("sidebar_warehouse", lang))
     if st.button(t("reset_warehouse_btn", lang), type="secondary", use_container_width=True):
         reset_warehouse(engine)
+        ensure_composite_audit_indexes(engine)
         st.success(t("reset_warehouse_success", lang))
         st.rerun()
 
@@ -649,22 +657,50 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
 st.divider()
 st.subheader(t("section_overview", lang))
 
-df_invoices = fetch_invoices_dataframe(engine)
+raw_invoices_df = fetch_invoices_dataframe(engine)
+df_invoices = normalize_and_validate_dataframe(
+    raw_invoices_df,
+    required_columns=[
+        "invoice_key",
+        "invoice_number",
+        "vendor_name",
+        "invoice_date",
+        "grand_total_amount",
+        "discrepancy_amount",
+        "risk_score",
+        "risk_level",
+        "summary_notes",
+    ],
+    numeric_columns=["grand_total_amount", "discrepancy_amount", "risk_score"],
+)
+
 if df_invoices.empty:
     st.info(t("no_data_yet", lang))
 else:
+    # Preserve NaN vs genuine 0.0: skipna=True ignores missing data instead of fabricating zeros
+    total_spend_val = df_invoices["grand_total_amount"].sum(skipna=True)
+    total_disc_val = df_invoices["discrepancy_amount"].abs().sum(skipna=True)
+    high_risk_count = int((df_invoices["risk_level"].fillna("").astype(str).str.upper() == "HIGH").sum())
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(t("kpi_total_invoices", lang), len(df_invoices))
-    c2.metric(t("kpi_total_spend", lang), f"{df_invoices['grand_total_amount'].sum():,.2f}")
-    c3.metric(t("kpi_high_risk", lang), int((df_invoices["risk_level"] == "HIGH").sum()))
-    c4.metric(t("kpi_total_discrepancy", lang), f"{df_invoices['discrepancy_amount'].abs().sum():,.2f}")
+    c2.metric(t("kpi_total_spend", lang), f"{total_spend_val:,.2f}" if pd.notna(total_spend_val) else "—")
+    c3.metric(t("kpi_high_risk", lang), high_risk_count)
+    c4.metric(t("kpi_total_discrepancy", lang), f"{total_disc_val:,.2f}" if pd.notna(total_disc_val) else "—")
 
-    vendor_df = fetch_vendor_spend_dataframe(engine)
-    if not vendor_df.empty:
+    raw_vendor_df = fetch_vendor_spend_dataframe(engine)
+    vendor_df = normalize_and_validate_dataframe(
+        raw_vendor_df,
+        required_columns=["vendor_name", "total_spend"],
+        numeric_columns=["total_spend", "avg_risk_score", "total_discrepancy"],
+    )
+    if not vendor_df.empty and "vendor_name" in vendor_df.columns and "total_spend" in vendor_df.columns:
         col_v1, col_v2 = st.columns([2, 1])
         with col_v1:
             st.markdown(f"**{t('spend_by_vendor', lang)}**")
-            st.bar_chart(vendor_df.set_index("vendor_name")["total_spend"])
+            chart_df = vendor_df.dropna(subset=["vendor_name", "total_spend"])
+            if not chart_df.empty:
+                st.bar_chart(chart_df.set_index("vendor_name")["total_spend"])
         with col_v2:
             st.markdown(f"**{t('vendor_risk_summary', lang)}**")
             st.dataframe(localize_columns(vendor_df, lang), use_container_width=True)
@@ -675,19 +711,28 @@ else:
         default=["LOW", "MEDIUM", "HIGH"],
         format_func=lambda lvl: get_risk_label(lvl, lang),
     )
-    filtered_df = df_invoices[df_invoices["risk_level"].isin(risk_filter)] if risk_filter else df_invoices
+    normalized_risk_series = df_invoices["risk_level"].fillna("").astype(str).str.upper()
+    filtered_df = df_invoices[normalized_risk_series.isin(risk_filter)] if risk_filter else df_invoices
     st.dataframe(localize_columns(filtered_df, lang), use_container_width=True)
 
+    valid_keys = filtered_df["invoice_key"].dropna().tolist()
     selected_key = st.selectbox(
         t("inspect_invoice_key", lang),
-        options=filtered_df["invoice_key"].tolist(),
-    )
+        options=valid_keys,
+    ) if valid_keys else None
+
     if selected_key is not None:
         row_match = filtered_df[filtered_df["invoice_key"] == selected_key]
         if not row_match.empty:
-            st.info(f"{t('audit_notes_prefix', lang)}: {row_match.iloc[0]['summary_notes']}")
+            notes_val = row_match.iloc[0].get("summary_notes", "")
+            st.info(f"{t('audit_notes_prefix', lang)}: {notes_val if pd.notna(notes_val) else '—'}")
         st.markdown(f"**{t('line_items_deviation', lang)}**")
-        lines_df = fetch_lines_for_invoice(engine, int(selected_key))
+        raw_lines_df = fetch_lines_for_invoice(engine, int(selected_key))
+        lines_df = normalize_and_validate_dataframe(
+            raw_lines_df,
+            required_columns=["description", "quantity", "unit_price", "line_total"],
+            numeric_columns=["quantity", "unit_price", "line_total", "expected_line_total", "price_deviation_pct"],
+        )
         st.dataframe(localize_columns(lines_df, lang), use_container_width=True)
 
     # -----------------------------------------------------------------------
