@@ -7,6 +7,7 @@ Streamlit Community Cloud sys.path compatibility.
 import re
 import sys
 import uuid
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, Set
@@ -107,6 +108,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "kpi_high_risk": "فواتير تتطلب مراجعة عاجلة",
         "kpi_total_discrepancy": "إجمالي الفروقات الحسابية ({currency})",
         "vat_audit_warning": "⚠️ تنبيه ضريبي: تم رصد {count} فاتورة يختلف فيها مبلغ ضريبة القيمة المضافة عن النسبة القياسية ({vat}%).",
+        "future_date_warning": "📅 تنبيه واقعية التاريخ: تم رصد {count} فاتورة تحمل تاريخ إصدار مستقبلي يتعدى اليوم الحالي ({today}).",
         "spend_by_vendor": "المصروفات حسب المورّد",
         "vendor_risk_summary": "ملخص المخاطر والفروقات حسب المورّد",
         "filter_risk_level": "تصفية حسب مستوى الخطورة",
@@ -188,6 +190,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "kpi_high_risk": "High-Priority Review",
         "kpi_total_discrepancy": "Total Math Variance ({currency})",
         "vat_audit_warning": "⚠️ VAT Alert: {count} invoice(s) show a VAT amount deviating from the configured {vat}% standard rate.",
+        "future_date_warning": "📅 Date Validity Alert: {count} invoice(s) have a future issue date beyond today ({today}).",
         "spend_by_vendor": "Spend by Vendor",
         "vendor_risk_summary": "Vendor Risk & Discrepancy Summary",
         "filter_risk_level": "Filter by Risk Level",
@@ -269,6 +272,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "kpi_high_risk": "Révision Prioritaire",
         "kpi_total_discrepancy": "Écart Arithmétique Total ({currency})",
         "vat_audit_warning": "⚠️ Alerte TVA : {count} facture(s) présentent un montant de TVA s'écartant du taux standard de {vat}%.",
+        "future_date_warning": "📅 Alerte Validité de Date : {count} facture(s) portent une date d'émission future dépassant aujourd'hui ({today}).",
         "spend_by_vendor": "Dépenses par Fournisseur",
         "vendor_risk_summary": "Synthèse des Risques et Écarts par Fournisseur",
         "filter_risk_level": "Filtrer par niveau de risque",
@@ -439,8 +443,32 @@ def localize_audit_notes(
 
     raw = "" if (note_text is None or (isinstance(note_text, float) and pd.isna(note_text))) else str(note_text).strip()
 
-    # Build explicit accounting variance breakdown when math or VAT discrepancies exist
+    # Build explicit accounting variance breakdown when math, VAT, or future-date discrepancies exist
     accounting_details: list[str] = []
+
+    raw_issue_date = ctx.get("issue_date") if pd.notna(ctx.get("issue_date")) else ctx.get("invoice_date")
+    if raw_issue_date is not None and pd.notna(raw_issue_date) and str(raw_issue_date).strip():
+        parsed_dt = pd.to_datetime(raw_issue_date, errors="coerce")
+        today_dt = date.today()
+        if pd.notna(parsed_dt) and parsed_dt.date() > today_dt:
+            days_ahead = (parsed_dt.date() - today_dt).days
+            inv_dt_str = parsed_dt.date().isoformat()
+            today_str = today_dt.isoformat()
+            if lang == "ar":
+                accounting_details.append(
+                    f"• نوع المخالفة: تاريخ إصدار غير واقعي (مستقبلي) | الحد الأقصى المسموح: {today_str} | "
+                    f"التاريخ المسجّل في الفاتورة: {inv_dt_str} | مقدار التجاوز: +{days_ahead} يوم"
+                )
+            elif lang == "fr":
+                accounting_details.append(
+                    f"• Type d'anomalie : Date d'émission future irréaliste | Date limite autorisée : {today_str} | "
+                    f"Date figurant sur la facture : {inv_dt_str} | Dépassement : +{days_ahead} jour(s)"
+                )
+            else:
+                accounting_details.append(
+                    f"• Violation Type: Unrealistic Future Issue Date | Max Allowed Date: {today_str} | "
+                    f"Invoice Issue Date: {inv_dt_str} | Variance: +{days_ahead} day(s)"
+                )
 
     if pd.notna(disc_amt) and abs(float(disc_amt)) >= 0.01 and pd.notna(grand_total):
         actual_gt = float(grand_total)
@@ -708,56 +736,56 @@ def sanitize_error_message(err: object) -> str:
     return msg
 
 
-# ---------------------------------------------------------------------------
-# Page Setup, Session/Workspace Isolation & Sidebar Controls
-# ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Invoice Spend & Anomaly Hub",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+def evaluate_issue_date_realism(invoice_obj: object, lang: str = "ar") -> tuple[bool, str]:
+    """
+    Validate that the invoice issue date does not exceed the current date.
+    Returns (is_future_date, localized_warning_message).
+    """
+    raw_dt = getattr(invoice_obj, "issue_date", None) or getattr(invoice_obj, "invoice_date", None)
+    if raw_dt is None:
+        return False, ""
+    parsed_dt = pd.to_datetime(raw_dt, errors="coerce")
+    today_dt = date.today()
+    if pd.isna(parsed_dt) or parsed_dt.date() <= today_dt:
+        return False, ""
 
-if "session_workspace_id" not in st.session_state:
-    st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
+    days_ahead = (parsed_dt.date() - today_dt).days
+    inv_dt_str = parsed_dt.date().isoformat()
+    today_str = today_dt.isoformat()
+    inv_num = getattr(invoice_obj, "invoice_number", "") or "N/A"
+    if lang == "ar":
+        msg = (
+            f"الفاتورة ({inv_num}): تاريخ الإصدار ({inv_dt_str}) يتعدى اليوم الحالي ({today_str}) "
+            f"بفارق (+{days_ahead} يوم)."
+        )
+    elif lang == "fr":
+        msg = (
+            f"Facture ({inv_num}) : la date d'émission ({inv_dt_str}) dépasse la date du jour ({today_str}) "
+            f"de (+{days_ahead} jour(s))."
+        )
+    else:
+        msg = (
+            f"Invoice ({inv_num}): issue date ({inv_dt_str}) exceeds today's date ({today_str}) "
+            f"by (+{days_ahead} day(s))."
+        )
+    return True, msg
 
-default_spike_pct = float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0))
-default_dup_days = int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7))
 
-
-def _reset_sidebar_defaults() -> None:
-    """Restore all audit sliders, thresholds, and rule weights to factory defaults."""
-    st.session_state["cfg_currency"] = "SAR"
-    for curr_code, prof in CURRENCY_PROFILES.items():
-        st.session_state[f"vat_rate_{curr_code}"] = float(prof["default_vat"])
-        st.session_state[f"approval_limit_{curr_code}"] = float(prof["default_approval_limit"])
-    st.session_state["cfg_vat_tol"] = 1.0
-    st.session_state["cfg_spike_pct"] = default_spike_pct
-    st.session_state["cfg_dup_days"] = default_dup_days
-    for rule_key, default_w in DEFAULT_RULE_WEIGHTS.items():
-        st.session_state[f"rule_en_{rule_key}"] = True
-        st.session_state[f"rule_w_{rule_key}"] = int(default_w)
-
-
-with st.sidebar:
-    lang = st.selectbox(
-        "🌐 اللغة / Language / Langue",
-        options=list(SUPPORTED_LANGUAGES.keys()),
-        index=0,
-        format_func=lambda code: SUPPORTED_LANGUAGES[code],
-    )
-
-    if st.button(t("reset_defaults_btn", lang), use_container_width=True):
-        _reset_sidebar_defaults()
-        st.toast(t("reset_defaults_done", lang))
-        st.rerun()
-
-    # 1. Collapsible Workspace & Session Isolation
-    with st.expander(t("sidebar_workspace_session", lang), expanded=False):
-        ws_mode = st.radio(
-            t("workspace_mode", lang),
-            options=["isolated", "named"],
-            format_func=lambda m: t("mode_isolated_session", lang) if m == "isolated" else t("mode_named_workspace", lang),
-            label_visibility="collapsed",
+def enforce_future_date_audit_flag(session, invoice_key: int | None, is_future: bool) -> None:
+    """Escalate persisted invoice risk score/level if its issue date is in the future."""
+    if not is_future or invoice_key is None:
+        return
+    record = session.query(FactInvoice).filter(FactInvoice.invoice_key == int(invoice_key)).first()
+    if record is None:
+        return
+    current_score = float(getattr(record, "risk_score", 0.0) or 0.0)
+    record.risk_score = min(100.0, max(current_score + 35.0, 75.0))
+    record.risk_level = "HIGH"
+    existing_notes = str(getattr(record, "summary_notes", "") or "").strip()
+    flag_note = "Future issue date exceeds current date."
+    if flag_note not in existing_notes:
+        record.summary_notes = f"{existing_notes} | {flag_note}".strip(" |")
+    session.commit()
         )
 
         if ws_mode == "isolated":
@@ -882,6 +910,7 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
     try:
         results = []
         duplicate_warnings = []
+        date_warnings = []
         errors = []
         seen_hashes_in_batch: Dict[str, str] = {}
         total_files = len(uploaded_files)
@@ -926,6 +955,9 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
 
                     if lower_name.endswith(".pdf"):
                         invoice, lines = parse_invoice_pdf_native(file_bytes, api_key=effective_api_key)
+                        is_future_dt, dt_warn = evaluate_issue_date_realism(invoice, lang=lang)
+                        if is_future_dt:
+                            date_warnings.append(dt_warn)
                         res = ingest_invoice_record(
                             session=session,
                             invoice=invoice,
@@ -937,6 +969,10 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                             procurement_threshold=float(proc_threshold),
                             rule_weights=active_weights,
                         )
+                        if is_future_dt and isinstance(res, dict):
+                            enforce_future_date_audit_flag(session, res.get("invoice_key"), True)
+                            res["risk_level"] = "HIGH"
+                            res["future_issue_date_alert"] = dt_warn
                         existing_hashes.add(base_hash)
                         results.append(res)
                     else:
@@ -947,6 +983,9 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                             )
                             if row_hash in existing_hashes:
                                 continue
+                            is_future_dt, dt_warn = evaluate_issue_date_realism(invoice, lang=lang)
+                            if is_future_dt:
+                                date_warnings.append(dt_warn)
                             res = ingest_invoice_record(
                                 session=session,
                                 invoice=invoice,
@@ -958,6 +997,10 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                                 procurement_threshold=float(proc_threshold),
                                 rule_weights=active_weights,
                             )
+                            if is_future_dt and isinstance(res, dict):
+                                enforce_future_date_audit_flag(session, res.get("invoice_key"), True)
+                                res["risk_level"] = "HIGH"
+                                res["future_issue_date_alert"] = dt_warn
                             existing_hashes.add(row_hash)
                             results.append(res)
                 except Exception as file_exc:
@@ -974,6 +1017,10 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
             )
             st.success(t("upload_success", lang, count=len(results), files=max(processed_files_count, 1)))
             st.json(results)
+        if date_warnings:
+            st.error(t("future_date_warning", lang, count=len(date_warnings), today=date.today().isoformat()))
+            for d_warn in date_warnings:
+                st.caption(f"• {d_warn}")
         if duplicate_warnings:
             st.warning(t("duplicate_summary", lang, skipped=len(duplicate_warnings)))
             for warn_msg in duplicate_warnings:
@@ -1039,6 +1086,14 @@ else:
         t("kpi_total_discrepancy", lang, currency=selected_currency),
         f"{total_disc_val:,.2f} {selected_currency}" if pd.notna(total_disc_val) else "—",
     )
+
+    date_col_name = "issue_date" if "issue_date" in df_invoices.columns and df_invoices["issue_date"].notna().any() else "invoice_date"
+    if date_col_name in df_invoices.columns:
+        parsed_dates = pd.to_datetime(df_invoices[date_col_name], errors="coerce")
+        today_dt = date.today()
+        future_date_rows = df_invoices[parsed_dates.notna() & (parsed_dates.dt.date > today_dt)]
+        if not future_date_rows.empty:
+            st.error(t("future_date_warning", lang, count=len(future_date_rows), today=today_dt.isoformat()))
 
     valid_vat_rows = df_invoices.dropna(subset=["subtotal_amount", "tax_amount"])
     valid_vat_rows = valid_vat_rows[valid_vat_rows["subtotal_amount"] > 0]
