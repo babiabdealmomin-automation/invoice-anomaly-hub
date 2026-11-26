@@ -314,48 +314,68 @@ COLUMN_LABELS: Dict[str, Dict[str, str]] = {
         "invoice_key": "رمز الفاتورة",
         "invoice_number": "رقم الفاتورة",
         "vendor_name": "اسم المورّد",
+        "vendor_nif": "الرقم الضريبي للمورّد",
         "invoice_date": "تاريخ الفاتورة",
+        "issue_date": "تاريخ الإصدار",
+        "due_date": "تاريخ الاستحقاق",
+        "created_at": "تاريخ التسجيل",
+        "source_filename": "اسم الملف المصدر",
         "currency": "العملة",
         "subtotal_amount": "المجموع قبل الضريبة",
-        "tax_amount": "الضريبة",
+        "tax_amount": "ضريبة القيمة المضافة",
         "discount_amount": "الخصم",
         "grand_total_amount": "المبلغ الإجمالي",
+        "expected_grand_total": "الإجمالي المتوقع",
         "discrepancy_amount": "الفرق الحسابي",
         "risk_score": "نقاط المخاطر",
         "risk_level": "مستوى الخطورة",
-        "summary_notes": "ملاحظات التدقيق",
+        "summary_notes": "ملاحظات التدقيق المحاسبي",
+        "status": "الحالة",
         "total_spend": "إجمالي المصروفات",
         "invoice_count": "عدد الفواتير",
         "avg_risk_score": "متوسط المخاطر",
         "total_discrepancy": "إجمالي الفروقات",
+        "line_number": "رقم البند",
+        "line_key": "رمز البند",
         "description": "البيان / الوصف",
         "quantity": "الكمية",
         "unit_price": "سعر الوحدة",
+        "historical_avg_price": "متوسط السعر التاريخي",
         "line_total": "إجمالي البند",
-        "expected_line_total": "الإجمالي المتوقع",
-        "price_deviation_pct": "انحراف السعر (%)",
+        "expected_line_total": "الإجمالي المتوقع للبند",
+        "price_deviation_pct": "نسبة انحراف السعر (%)",
     },
     "fr": {
         "invoice_key": "Clé Facture",
         "invoice_number": "N° Facture",
         "vendor_name": "Fournisseur",
+        "vendor_nif": "Identifiant Fiscal",
         "invoice_date": "Date Facture",
+        "issue_date": "Date d'Émission",
+        "due_date": "Date d'Échéance",
+        "created_at": "Date d'Enregistrement",
+        "source_filename": "Fichier Source",
         "currency": "Devise",
         "subtotal_amount": "Montant HT",
         "tax_amount": "TVA",
         "discount_amount": "Remise",
         "grand_total_amount": "Montant TTC",
+        "expected_grand_total": "Total Attendu",
         "discrepancy_amount": "Écart",
         "risk_score": "Score Risque",
         "risk_level": "Niveau Risque",
-        "summary_notes": "Notes d'Audit",
+        "summary_notes": "Notes d'Audit Comptable",
+        "status": "Statut",
         "total_spend": "Dépenses Totales",
         "invoice_count": "Nb Factures",
         "avg_risk_score": "Risque Moyen",
         "total_discrepancy": "Écart Total",
+        "line_number": "N° Ligne",
+        "line_key": "Clé Ligne",
         "description": "Désignation",
         "quantity": "Quantité",
         "unit_price": "Prix Unitaire",
+        "historical_avg_price": "Prix Moyen Historique",
         "line_total": "Total Ligne",
         "expected_line_total": "Total Attendu",
         "price_deviation_pct": "Écart Prix (%)",
@@ -386,66 +406,149 @@ def get_risk_label(risk_level: str, lang: str = "ar") -> str:
 
 
 def localize_columns(df: pd.DataFrame, lang: str) -> pd.DataFrame:
-    """Return a copy of the DataFrame with localized column headers for display."""
-    if lang not in COLUMN_LABELS or df.empty:
+    """Return a copy of the DataFrame with localized headers and cell labels for display."""
+    if df.empty:
         return df
-    return df.rename(columns=COLUMN_LABELS[lang])
+    display_df = df.copy()
+    if "risk_level" in display_df.columns:
+        display_df["risk_level"] = display_df["risk_level"].apply(
+            lambda v: get_risk_label(str(v), lang) if pd.notna(v) and str(v).strip() else "—"
+        )
+    if lang not in COLUMN_LABELS:
+        return display_df
+    return display_df.rename(columns=COLUMN_LABELS[lang])
 
 
-def localize_audit_notes(note_text: object, lang: str = "ar") -> str:
+def localize_audit_notes(
+    note_text: object,
+    lang: str = "ar",
+    row_context: Dict[str, object] | None = None,
+    expected_vat_pct: float | None = None,
+    vat_tolerance_pct: float = 1.0,
+) -> str:
     """
-    Translate engine-generated audit summary notes and pass/fail checks
-    into clear Arabic or French accounting terminology when requested.
+    Translate engine-generated audit summary notes and enrich alerts with explicit
+    accounting details: violation type, expected vs. actual value, and variance amount.
     """
-    if note_text is None or (isinstance(note_text, float) and pd.isna(note_text)):
-        return "—"
-    raw = str(note_text).strip()
-    if not raw:
-        return "—"
-    if lang == "en":
-        return raw
+    ctx = row_context or {}
+    currency = str(ctx.get("currency") or "").strip()
+    subtotal = pd.to_numeric(ctx.get("subtotal_amount"), errors="coerce")
+    tax_amt = pd.to_numeric(ctx.get("tax_amount"), errors="coerce")
+    grand_total = pd.to_numeric(ctx.get("grand_total_amount"), errors="coerce")
+    disc_amt = pd.to_numeric(ctx.get("discrepancy_amount"), errors="coerce")
+
+    raw = "" if (note_text is None or (isinstance(note_text, float) and pd.isna(note_text))) else str(note_text).strip()
+
+    # Build explicit accounting variance breakdown when math or VAT discrepancies exist
+    accounting_details: list[str] = []
+
+    if pd.notna(disc_amt) and abs(float(disc_amt)) >= 0.01 and pd.notna(grand_total):
+        actual_gt = float(grand_total)
+        expected_gt = actual_gt - float(disc_amt)
+        variance_val = float(disc_amt)
+        if lang == "ar":
+            accounting_details.append(
+                f"• نوع المخالفة: فرق في المطابقة الحسابية | القيمة المتوقعة: {expected_gt:,.2f} {currency} | "
+                f"القيمة الفعلية: {actual_gt:,.2f} {currency} | مقدار الفارق: {variance_val:+,.2f} {currency}"
+            )
+        elif lang == "fr":
+            accounting_details.append(
+                f"• Type d'anomalie : Écart arithmétique | Valeur attendue : {expected_gt:,.2f} {currency} | "
+                f"Valeur réelle : {actual_gt:,.2f} {currency} | Écart : {variance_val:+,.2f} {currency}"
+            )
+        else:
+            accounting_details.append(
+                f"• Violation Type: Calculation Variance | Expected Value: {expected_gt:,.2f} {currency} | "
+                f"Actual Value: {actual_gt:,.2f} {currency} | Variance: {variance_val:+,.2f} {currency}"
+            )
+
+    if (
+        expected_vat_pct is not None
+        and pd.notna(subtotal)
+        and float(subtotal) > 0
+        and pd.notna(tax_amt)
+    ):
+        sub_val = float(subtotal)
+        actual_vat_amt = float(tax_amt)
+        actual_vat_pct = (actual_vat_amt / sub_val) * 100.0
+        if abs(actual_vat_pct - float(expected_vat_pct)) > float(vat_tolerance_pct):
+            expected_vat_amt = sub_val * (float(expected_vat_pct) / 100.0)
+            vat_diff = actual_vat_amt - expected_vat_amt
+            if lang == "ar":
+                accounting_details.append(
+                    f"• نوع المخالفة: اختلاف نسبة ضريبة القيمة المضافة ({actual_vat_pct:.2f}% بدلاً من {expected_vat_pct:g}%) | "
+                    f"الضريبة المتوقعة: {expected_vat_amt:,.2f} {currency} | الضريبة الفعلية: {actual_vat_amt:,.2f} {currency} | "
+                    f"مقدار الفارق: {vat_diff:+,.2f} {currency}"
+                )
+            elif lang == "fr":
+                accounting_details.append(
+                    f"• Type d'anomalie : Écart de taux de TVA ({actual_vat_pct:.2f}% au lieu de {expected_vat_pct:g}%) | "
+                    f"TVA attendue : {expected_vat_amt:,.2f} {currency} | TVA réelle : {actual_vat_amt:,.2f} {currency} | "
+                    f"Écart : {vat_diff:+,.2f} {currency}"
+                )
+            else:
+                accounting_details.append(
+                    f"• Violation Type: VAT Rate Deviation ({actual_vat_pct:.2f}% vs. {expected_vat_pct:g}%) | "
+                    f"Expected VAT: {expected_vat_amt:,.2f} {currency} | Actual VAT: {actual_vat_amt:,.2f} {currency} | "
+                    f"Variance: {vat_diff:+,.2f} {currency}"
+                )
 
     if lang == "ar":
         replacements = [
-            (r"(?i)\ball deterministic checks passed\.?\b", "اجتازت الفاتورة جميع فحوصات المطابقة الحسابية والرقابية بنجاح."),
-            (r"(?i)\bno anomalies detected\.?\b", "لم يتم رصد أي انحرافات أو مؤشرات مخاطر."),
-            (r"(?i)\bclean invoice\.?\b", "فاتورة سليمة ومطابقة محاسبياً."),
-            (r"(?i)\barithmetic mismatch\b", "فرق في المطابقة الحسابية"),
-            (r"(?i)\bprice spike\b", "ارتفاع غير معتاد في سعر الوحدة"),
-            (r"(?i)\bnear[- ]duplicate invoice\b", "اشتباه تكرار فاتورة لنفس المورّد"),
-            (r"(?i)\bsplit[- ]invoice pattern\b", "اشتباه تجزئة المشتريات لتجاوز سقف الاعتماد"),
-            (r"(?i)\bhigh[- ]risk red flags\b", "مؤشرات رقابية تستوجب التحقق المستندي"),
-            (r"(?i)\bthird[- ]party or offshore payee\b", "تحويل الدفع لطرف ثالث أو حساب خارجي"),
-            (r"(?i)\bround high[- ]value total\b", "مبلغ إجمالي مرتفع ومقرّب بالكامل"),
-            (r"(?i)\bnif mismatch\b", "اختلاف الرقم الضريبي عن سجل المورّد"),
-            (r"(?i)\binvalid nif format\b", "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة"),
-            (r"(?i)\bbank account changed\b", "تغيير بيانات الحساب البنكي للمورّد"),
-            (r"(?i)\bnon[- ]positive grand total\b", "فاتورة بإجمالي صفري أو سالب"),
-            (r"(?i)\bdiscrepancy of\b", "بفارق حسابي قدره"),
-            (r"(?i)\bexceeds historical average by\b", "يتجاوز متوسط السعر التاريخي بنسبة"),
-            (r"(?i)\bwithin\s+(\d+)\s+days\b", r"خلال \1 يوم/أيام"),
+            (r"(?i)all deterministic (?:audit )?checks passed\.?", "اجتازت الفاتورة جميع فحوصات المطابقة الحسابية والرقابية بنجاح."),
+            (r"(?i)all checks passed\.?", "اجتازت الفاتورة جميع الفحوصات بنجاح."),
+            (r"(?i)passed all deterministic checks\.?", "اجتازت الفاتورة جميع فحوصات المطابقة الحسابية بنجاح."),
+            (r"(?i)no anomalies(?: or red flags)? detected\.?", "لم يتم رصد أي انحرافات أو مؤشرات مخاطر."),
+            (r"(?i)no issues found\.?", "لا توجد ملاحظات أو مخالفات محاسبية."),
+            (r"(?i)clean invoice\.?", "فاتورة سليمة ومطابقة محاسبياً."),
+            (r"(?i)arithmetic mismatch", "فرق في المطابقة الحسابية"),
+            (r"(?i)price spike", "ارتفاع غير معتاد في سعر الوحدة"),
+            (r"(?i)near[- ]duplicate invoice", "اشتباه تكرار فاتورة لنفس المورّد"),
+            (r"(?i)split[- ]invoice pattern", "اشتباه تجزئة المشتريات لتجاوز سقف الاعتماد"),
+            (r"(?i)high[- ]risk red flags", "مؤشرات رقابية تستوجب التحقق المستندي"),
+            (r"(?i)third[- ]party or offshore payee", "تحويل الدفع لطرف ثالث أو حساب خارجي"),
+            (r"(?i)round high[- ]value total", "مبلغ إجمالي مرتفع ومقرّب بالكامل"),
+            (r"(?i)nif mismatch", "اختلاف الرقم الضريبي عن سجل المورّد"),
+            (r"(?i)invalid nif format", "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة"),
+            (r"(?i)bank account changed", "تغيير بيانات الحساب البنكي للمورّد"),
+            (r"(?i)non[- ]positive grand total", "فاتورة بإجمالي صفري أو سالب"),
+            (r"(?i)discrepancy of", "بفارق حسابي قدره"),
+            (r"(?i)expected", "القيمة المتوقعة"),
+            (r"(?i)actual", "القيمة الفعلية"),
+            (r"(?i)exceeds historical average by", "يتجاوز متوسط السعر التاريخي بنسبة"),
+            (r"(?i)within\s+(\d+)\s+days", r"خلال \1 يوم/أيام"),
         ]
         translated = raw
         for pattern, repl in replacements:
             translated = re.sub(pattern, repl, translated)
-        return translated
-
-    if lang == "fr":
+        if not translated and not accounting_details:
+            return "اجتازت الفاتورة جميع فحوصات المطابقة الحسابية والرقابية بنجاح."
+    elif lang == "fr":
         replacements_fr = [
-            (r"(?i)\ball deterministic checks passed\.?\b", "Tous les contrôles arithmétiques et réglementaires ont réussi."),
-            (r"(?i)\bno anomalies detected\.?\b", "Aucune anomalie détectée."),
-            (r"(?i)\bclean invoice\.?\b", "Facture conforme."),
-            (r"(?i)\barithmetic mismatch\b", "Écart de calcul comptable"),
-            (r"(?i)\bprice spike\b", "Hausse inhabituelle du prix unitaire"),
-            (r"(?i)\bnear[- ]duplicate invoice\b", "Suspicion de facture en double"),
-            (r"(?i)\bsplit[- ]invoice pattern\b", "Suspicion de fractionnement d'achat"),
+            (r"(?i)all deterministic (?:audit )?checks passed\.?", "Tous les contrôles arithmétiques et réglementaires ont réussi."),
+            (r"(?i)all checks passed\.?", "Tous les contrôles ont réussi."),
+            (r"(?i)no anomalies(?: or red flags)? detected\.?", "Aucune anomalie détectée."),
+            (r"(?i)clean invoice\.?", "Facture conforme."),
+            (r"(?i)arithmetic mismatch", "Écart de calcul comptable"),
+            (r"(?i)price spike", "Hausse inhabituelle du prix unitaire"),
+            (r"(?i)near[- ]duplicate invoice", "Suspicion de facture en double"),
+            (r"(?i)split[- ]invoice pattern", "Suspicion de fractionnement d'achat"),
         ]
         translated = raw
         for pattern, repl in replacements_fr:
             translated = re.sub(pattern, repl, translated)
-        return translated
+        if not translated and not accounting_details:
+            return "Tous les contrôles arithmétiques et réglementaires ont réussi."
+    else:
+        translated = raw or "All deterministic checks passed."
 
-    return raw
+    if accounting_details:
+        details_block = "\n".join(accounting_details)
+        if translated and "اجتازت الفاتورة" not in translated and "passed" not in translated.lower():
+            return f"{details_block}\n{translated}"
+        return details_block
+
+    return translated
 
 
 def get_direction_css(lang: str = "ar") -> str:
@@ -910,7 +1013,16 @@ if df_invoices.empty:
     st.info(t("no_data_yet", lang))
 else:
     df_invoices["currency"] = df_invoices["currency"].fillna(selected_currency).replace("", selected_currency)
-    df_invoices["summary_notes"] = df_invoices["summary_notes"].apply(lambda txt: localize_audit_notes(txt, lang))
+    df_invoices["summary_notes"] = df_invoices.apply(
+        lambda row: localize_audit_notes(
+            row.get("summary_notes"),
+            lang=lang,
+            row_context=row.to_dict(),
+            expected_vat_pct=float(vat_rate_pct),
+            vat_tolerance_pct=float(vat_tolerance_pct),
+        ),
+        axis=1,
+    )
 
     total_spend_val = df_invoices["grand_total_amount"].sum(skipna=True)
     total_disc_val = df_invoices["discrepancy_amount"].abs().sum(skipna=True)
