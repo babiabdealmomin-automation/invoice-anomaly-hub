@@ -2,6 +2,8 @@
 Streamlit interactive dashboard for Invoice Spend & Anomaly Intelligence Hub.
 Self-contained multilingual UI (Arabic with RTL, English, French) and
 Streamlit Community Cloud sys.path compatibility.
+"""
+
 import re
 import sys
 import uuid
@@ -367,6 +369,19 @@ def get_direction_css(lang: str = "ar") -> str:
             }
             .stDataFrame {
                 direction: rtl;
+            }
+        </style>
+        """
+    return """
+    <style>
+        .stApp, .stSidebar, [data-testid="stAppViewContainer"] {
+            direction: ltr;
+            text-align: left;
+        }
+    </style>
+    """
+
+
 def sanitize_workspace_slug(raw_name: str) -> str:
     """Convert any workspace name into a safe filesystem slug."""
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", raw_name.strip()).strip("_").lower()
