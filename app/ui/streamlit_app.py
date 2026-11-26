@@ -56,12 +56,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "workspace_name_input": "اسم مساحة العمل",
         "active_workspace_badge": "مساحة العمل النشطة: {ws}",
         "new_isolated_session_btn": "🆕 بدء جلسة جديدة معزولة",
-        "gemini_api_key": "مفتاح Gemini API (اختياري - للجلسة فقط)",
-        "api_key_placeholder": "أدخل مفتاحك الخاص أو اتركه فارغاً لاستخدام مفتاح الخادم الآمن",
         "api_key_server_active": "🔒 مفتاح الخادم مفعّل ومعزول بأمان (لا يُكشف للمتصفح)",
-        "api_key_user_active": "🔑 يتم استخدام مفتاحك الخاص المعزول في هذه الجلسة فقط",
-        "api_key_missing": "⚠️ لا يوجد مفتاح API مفعّل (يرجى إدخال مفتاحك أو ضبط Secrets)",
-        "clear_session_key_btn": "🧹 مسح مفتاح الجلسة",
+        "api_key_missing": "⚠️ مفتاح API غير مضبوط في إعدادات الخادم (Secrets)",
         "price_spike_pct": "عتبة قفزة السعر (%)",
         "near_duplicate_days": "نافذة الفواتير شبه المكررة والتجزئة (أيام)",
         "procurement_threshold": "سقف الصفقات / المشتريات المرجعي (دج)",
@@ -137,12 +133,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "workspace_name_input": "Workspace Name",
         "active_workspace_badge": "Active Workspace: {ws}",
         "new_isolated_session_btn": "🆕 Start New Isolated Session",
-        "gemini_api_key": "Gemini API Key (Optional - Session Only)",
-        "api_key_placeholder": "Enter your own key or leave blank to use server secret",
         "api_key_server_active": "🔒 Server secret active & isolated (never sent to browser)",
-        "api_key_user_active": "🔑 Using your session-isolated API key",
-        "api_key_missing": "⚠️ No API key configured (enter your key or set server Secrets)",
-        "clear_session_key_btn": "🧹 Clear Session Key",
+        "api_key_missing": "⚠️ Server API key not configured in Secrets",
         "price_spike_pct": "Price Spike Threshold (%)",
         "near_duplicate_days": "Near-Duplicate & Split Window (Days)",
         "procurement_threshold": "Procurement Threshold (DZD)",
@@ -216,12 +208,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "workspace_name_input": "Nom de l'espace de travail",
         "active_workspace_badge": "Espace actif : {ws}",
         "new_isolated_session_btn": "🆕 Nouvelle session isolée",
-        "gemini_api_key": "Clé API Gemini (Optionnel - Session uniquement)",
-        "api_key_placeholder": "Entrez votre clé ou laissez vide pour la clé serveur sécurisée",
         "api_key_server_active": "🔒 Clé serveur active et isolée (jamais exposée au navigateur)",
-        "api_key_user_active": "🔑 Clé personnelle isolée active pour cette session",
-        "api_key_missing": "⚠️ Aucune clé API configurée (saisissez votre clé ou configurez Secrets)",
-        "clear_session_key_btn": "🧹 Effacer la clé de session",
+        "api_key_missing": "⚠️ Clé API serveur non configurée dans Secrets",
         "price_spike_pct": "Seuil de hausse de prix (%)",
         "near_duplicate_days": "Fenêtre doublons / fractionnement (jours)",
         "procurement_threshold": "Seuil des marchés publics (DZD)",
@@ -438,9 +426,6 @@ st.set_page_config(page_title="Invoice Spend & Anomaly Hub", layout="wide")
 if "session_workspace_id" not in st.session_state:
     st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
 
-if "user_gemini_api_key" not in st.session_state:
-    st.session_state["user_gemini_api_key"] = ""
-
 default_spike_pct = float(getattr(settings, "PRICE_SPIKE_THRESHOLD_PCT", 25.0))
 default_dup_days = int(getattr(settings, "NEAR_DUPLICATE_DAYS", 7))
 default_proc_threshold = float(getattr(settings, "PROCUREMENT_THRESHOLD", 3500000.0))
@@ -465,7 +450,6 @@ with st.sidebar:
         active_ws_slug = st.session_state["session_workspace_id"]
         if st.button(t("new_isolated_session_btn", lang), use_container_width=True):
             st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
-            st.session_state["user_gemini_api_key"] = ""
             st.rerun()
     else:
         raw_ws_name = st.text_input(t("workspace_name_input", lang), value="audit_team_1")
@@ -481,28 +465,11 @@ with st.sidebar:
     st.divider()
     st.header(t("sidebar_settings", lang))
 
-    # Never populate value= with the server secret so it is never rendered in browser HTML/DOM
-    user_key_entry = st.text_input(
-        t("gemini_api_key", lang),
-        value="",
-        type="password",
-        placeholder=t("api_key_placeholder", lang),
-    )
-    if user_key_entry.strip():
-        st.session_state["user_gemini_api_key"] = user_key_entry.strip()
-
-    server_secret_key = _get_server_gemini_key()
-    if st.session_state["user_gemini_api_key"]:
-        effective_api_key = st.session_state["user_gemini_api_key"]
-        st.caption(t("api_key_user_active", lang))
-        if st.button(t("clear_session_key_btn", lang), use_container_width=True):
-            st.session_state["user_gemini_api_key"] = ""
-            st.rerun()
-    elif server_secret_key:
-        effective_api_key = server_secret_key
+    # Server-only secret resolution: no client-side API key input field is rendered
+    effective_api_key = _get_server_gemini_key()
+    if effective_api_key:
         st.caption(t("api_key_server_active", lang))
     else:
-        effective_api_key = ""
         st.warning(t("api_key_missing", lang))
 
     spike_pct = st.slider(
