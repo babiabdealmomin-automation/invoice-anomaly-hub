@@ -8,6 +8,10 @@ import re
 import sys
 import uuid
 from datetime import date
+import hashlib
+import hmac
+import json
+import os
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, Set
@@ -141,6 +145,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "mode_isolated_session": "جلسة مستقلة تماماً (معزولة لكل مستخدم)",
         "mode_named_workspace": "مساحة عمل مخصصة (حسب اسم القسم/المشروع)",
         "workspace_name_input": "اسم مساحة العمل",
+        "workspace_password_input": "كلمة مرور مساحة العمل",
+        "workspace_password_confirm": "تأكيد كلمة المرور (لإنشاء مساحة جديدة)",
+        "workspace_create_btn": "🔐 إنشاء وحماية مساحة العمل",
+        "workspace_unlock_btn": "🔓 فتح مساحة العمل",
+        "workspace_lock_btn": "🔒 قفل مساحة العمل",
+        "workspace_pw_required": "⚠️ يرجى إدخال كلمة مرور لحماية مساحة العمل أو فتحها.",
+        "workspace_pw_mismatch": "❌ كلمتا المرور غير متطابقتين.",
+        "workspace_pw_short": "⚠️ يجب أن تتكون كلمة المرور من 4 أحرف على الأقل.",
+        "workspace_pw_invalid": "❌ كلمة المرور غير صحيحة لمساحة العمل هذه.",
+        "workspace_locked_banner": "🔒 مساحة العمل '{ws}' محمية بكلمة مرور. أدخل كلمة المرور في الشريط الجانبي لفتح البيانات.",
+        "workspace_unlocked_badge": "🔓 مساحة العمل مفتوحة ومؤمّنة: {ws}",
         "active_workspace_badge": "مساحة العمل النشطة: {ws}",
         "new_isolated_session_btn": "🆕 بدء جلسة جديدة معزولة",
         "api_key_server_active": "🔒 مفتاح الخادم مفعّل ومعزول بأمان",
@@ -252,6 +267,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "mode_isolated_session": "Isolated User Session (Private per browser)",
         "mode_named_workspace": "Named Workspace (Department / Project)",
         "workspace_name_input": "Workspace Name",
+        "workspace_password_input": "Workspace Password",
+        "workspace_password_confirm": "Confirm Password (for new workspace)",
+        "workspace_create_btn": "🔐 Create & Protect Workspace",
+        "workspace_unlock_btn": "🔓 Unlock Workspace",
+        "workspace_lock_btn": "🔒 Lock Workspace",
+        "workspace_pw_required": "⚠️ Please enter a password to create or unlock this workspace.",
+        "workspace_pw_mismatch": "❌ Passwords do not match.",
+        "workspace_pw_short": "⚠️ Password must be at least 4 characters long.",
+        "workspace_pw_invalid": "❌ Incorrect password for this workspace.",
+        "workspace_locked_banner": "🔒 Workspace '{ws}' is password-protected. Enter the password in the sidebar to unlock.",
+        "workspace_unlocked_badge": "🔓 Workspace unlocked & secured: {ws}",
         "active_workspace_badge": "Active Workspace: {ws}",
         "new_isolated_session_btn": "🆕 Start New Isolated Session",
         "api_key_server_active": "🔒 Server secret active & isolated",
@@ -363,6 +389,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "mode_isolated_session": "Session isolée (Privée par utilisateur)",
         "mode_named_workspace": "Espace de travail nommé (Département / Projet)",
         "workspace_name_input": "Nom de l'espace de travail",
+        "workspace_password_input": "Mot de passe de l'espace",
+        "workspace_password_confirm": "Confirmer le mot de passe (nouvel espace)",
+        "workspace_create_btn": "🔐 Créer et protéger l'espace",
+        "workspace_unlock_btn": "🔓 Déverrouiller l'espace",
+        "workspace_lock_btn": "🔒 Verrouiller l'espace",
+        "workspace_pw_required": "⚠️ Veuillez saisir un mot de passe pour créer ou déverrouiller cet espace.",
+        "workspace_pw_mismatch": "❌ Les mots de passe ne correspondent pas.",
+        "workspace_pw_short": "⚠️ Le mot de passe doit contenir au moins 4 caractères.",
+        "workspace_pw_invalid": "❌ Mot de passe incorrect pour cet espace de travail.",
+        "workspace_locked_banner": "🔒 L'espace « {ws} » est protégé par mot de passe. Saisissez-le dans la barre latérale.",
+        "workspace_unlocked_badge": "🔓 Espace déverrouillé et sécurisé : {ws}",
         "active_workspace_badge": "Espace actif : {ws}",
         "new_isolated_session_btn": "🆕 Nouvelle session isolée",
         "api_key_server_active": "🔒 Clé serveur active et isolée",
@@ -891,6 +928,70 @@ def resolve_workspace_database_url(workspace_slug: str) -> str:
     return f"sqlite:///{db_file.as_posix()}?timeout=30.0"
 
 
+def _workspace_auth_store_path() -> Path:
+    workspaces_dir = ROOT_DIR / "data" / "workspaces"
+    workspaces_dir.mkdir(parents=True, exist_ok=True)
+    return workspaces_dir / ".ws_auth.json"
+
+
+def _load_workspace_auth_registry() -> Dict[str, Dict[str, str]]:
+    auth_file = _workspace_auth_store_path()
+    if not auth_file.exists():
+        return {}
+    try:
+        data = json.loads(auth_file.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_workspace_auth_registry(registry: Dict[str, Dict[str, str]]) -> None:
+    auth_file = _workspace_auth_store_path()
+    auth_file.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+
+def _hash_workspace_password(password: str, salt_hex: str) -> str:
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        bytes.fromhex(salt_hex),
+        120_000,
+    )
+    return dk.hex()
+
+
+def is_named_workspace_registered(workspace_slug: str) -> bool:
+    registry = _load_workspace_auth_registry()
+    if workspace_slug in registry:
+        return True
+    # Also check legacy unprotected workspace DB if one already exists on disk
+    legacy_db = ROOT_DIR / "data" / "workspaces" / f"ws_{workspace_slug}.db"
+    return legacy_db.exists()
+
+
+def register_named_workspace_password(workspace_slug: str, password: str) -> None:
+    registry = _load_workspace_auth_registry()
+    salt_hex = os.urandom(16).hex()
+    pw_hash = _hash_workspace_password(password, salt_hex)
+    registry[workspace_slug] = {"salt": salt_hex, "hash": pw_hash}
+    _save_workspace_auth_registry(registry)
+
+
+def verify_named_workspace_password(workspace_slug: str, password: str) -> bool:
+    registry = _load_workspace_auth_registry()
+    entry = registry.get(workspace_slug)
+    if not entry:
+        # Legacy workspace created prior to password protection: set password on first unlock
+        register_named_workspace_password(workspace_slug, password)
+        return True
+    expected_hash = entry.get("hash", "")
+    salt_hex = entry.get("salt", "")
+    if not expected_hash or not salt_hex:
+        return False
+    candidate_hash = _hash_workspace_password(password, salt_hex)
+    return hmac.compare_digest(candidate_hash, expected_hash)
+
+
 def _get_server_gemini_key() -> str:
     """Read the server-side Gemini API key strictly inside backend memory (never sent to UI)."""
     try:
@@ -1087,7 +1188,8 @@ def main() -> None:
         st.divider()
 
         # 1. Workspace & Session Isolation
-        with st.expander(t("sidebar_workspace_session", lang), expanded=False):
+        workspace_unlocked = True
+        with st.expander(t("sidebar_workspace_session", lang), expanded=True):
             ws_mode = st.radio(
                 t("workspace_mode", lang),
                 options=["isolated", "named"],
@@ -1101,11 +1203,50 @@ def main() -> None:
                 if st.button(t("new_isolated_session_btn", lang), use_container_width=True):
                     st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
                     st.rerun()
+                st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
             else:
                 raw_ws_name = st.text_input(t("workspace_name_input", lang), value="audit_team_1")
                 active_ws_slug = sanitize_workspace_slug(raw_ws_name)
+                unlocked_set: Set[str] = st.session_state.setdefault("unlocked_named_workspaces", set())
+                ws_exists = is_named_workspace_registered(active_ws_slug)
 
-            st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
+                if active_ws_slug in unlocked_set:
+                    workspace_unlocked = True
+                    st.caption(t("workspace_unlocked_badge", lang, ws=f"`{active_ws_slug}`"))
+                    if st.button(t("workspace_lock_btn", lang), use_container_width=True):
+                        unlocked_set.discard(active_ws_slug)
+                        st.rerun()
+                else:
+                    workspace_unlocked = False
+                    pw_input = st.text_input(
+                        t("workspace_password_input", lang),
+                        type="password",
+                        key=f"ws_pw_{active_ws_slug}",
+                    )
+                    if ws_exists:
+                        if st.button(t("workspace_unlock_btn", lang), type="primary", use_container_width=True):
+                            if not pw_input:
+                                st.warning(t("workspace_pw_required", lang))
+                            elif verify_named_workspace_password(active_ws_slug, pw_input):
+                                unlocked_set.add(active_ws_slug)
+                                st.rerun()
+                            else:
+                                st.error(t("workspace_pw_invalid", lang))
+                    else:
+                        pw_confirm = st.text_input(
+                            t("workspace_password_confirm", lang),
+                            type="password",
+                            key=f"ws_pw_confirm_{active_ws_slug}",
+                        )
+                        if st.button(t("workspace_create_btn", lang), type="primary", use_container_width=True):
+                            if not pw_input or len(pw_input) < 4:
+                                st.warning(t("workspace_pw_short", lang))
+                            elif pw_input != pw_confirm:
+                                st.error(t("workspace_pw_mismatch", lang))
+                            else:
+                                register_named_workspace_password(active_ws_slug, pw_input)
+                                unlocked_set.add(active_ws_slug)
+                                st.rerun()
 
         # 2. Collapsible Audit Thresholds & Currency Configuration
         with st.expander(t("sidebar_settings", lang), expanded=True):
@@ -1197,6 +1338,10 @@ def main() -> None:
     st.markdown(get_direction_css(lang), unsafe_allow_html=True)
     st.title(t("app_title", lang))
     st.caption(t("app_subtitle", lang))
+
+    if not workspace_unlocked:
+        st.warning(t("workspace_locked_banner", lang, ws=active_ws_slug))
+        return
 
     # Initialize isolated workspace database safely
     workspace_db_url = resolve_workspace_database_url(active_ws_slug)
