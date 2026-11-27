@@ -215,6 +215,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "status_FLAGGED": "معلّقة للتحقيق (FLAGGED)",
         "status_DISMISSED": "تنبيه مستبعد / مبرر (DISMISSED)",
         "inspect_invoice_key": "فحص البنود وملاحظات التدقيق لرمز الفاتورة",
+        "original_doc_section": "📎 المستند الأصلي المرفق (Original Document)",
+        "download_original_btn": "📥 تحميل المستند الأصلي ({filename})",
+        "original_doc_missing_warn": "ℹ️ المستند الأصلي لهذه الفاتورة لم يعد متوفراً في التخزين المؤقت للخادم (قد يكون تم مسحه بعد إعادة تشغيل الحاوية السحابية).",
         "audit_notes_prefix": "ملاحظات التدقيق",
         "line_items_deviation": "تفاصيل البنود وانحراف الأسعار",
         "section_exports": "3. تصدير التقارير النظيفة",
@@ -337,6 +340,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "status_FLAGGED": "Flagged for Investigation (FLAGGED)",
         "status_DISMISSED": "Dismissed Alert (DISMISSED)",
         "inspect_invoice_key": "Inspect Line Items & Audit Notes for Invoice Key",
+        "original_doc_section": "📎 Attached Original Document",
+        "download_original_btn": "📥 Download Original Document ({filename})",
+        "original_doc_missing_warn": "ℹ️ The original source file for this invoice is no longer available in ephemeral server storage (e.g., after a cloud container restart).",
         "audit_notes_prefix": "Audit Notes",
         "line_items_deviation": "Line Items & Price Deviation",
         "section_exports": "3. Clean Exports",
@@ -459,6 +465,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "status_FLAGGED": "Signalée / Bloquée (FLAGGED)",
         "status_DISMISSED": "Alerte écartée (DISMISSED)",
         "inspect_invoice_key": "Inspecter les lignes et notes d'audit pour la clé facture",
+        "original_doc_section": "📎 Document Original Attaché",
+        "download_original_btn": "📥 Télécharger le document original ({filename})",
+        "original_doc_missing_warn": "ℹ️ Le fichier source original n'est plus disponible dans le stockage temporaire du serveur (suite à un redémarrage du conteneur).",
         "audit_notes_prefix": "Notes d'audit",
         "line_items_deviation": "Lignes de facture et écart de prix",
         "section_exports": "3. Exports Propres",
@@ -929,109 +938,109 @@ def resolve_workspace_database_url(workspace_slug: str) -> str:
     return f"sqlite:///{db_file.as_posix()}?timeout=30.0"
 
 
-def _workspace_auth_store_path() -> Path:
-    workspaces_dir = ROOT_DIR / "data" / "workspaces"
-    workspaces_dir.mkdir(parents=True, exist_ok=True)
-    return workspaces_dir / ".ws_auth.json"
+def _workspace_attachments_dir(workspace_slug: str) -> Path:
+    """Return the isolated attachment storage folder for the active workspace."""
+    att_dir = ROOT_DIR / "data" / "workspaces" / f"attachments_{workspace_slug}"
+    att_dir.mkdir(parents=True, exist_ok=True)
+    return att_dir
 
 
-def _load_workspace_auth_registry() -> Dict[str, Dict[str, str]]:
-    auth_file = _workspace_auth_store_path()
-    if not auth_file.exists():
+def _load_attachment_manifest(workspace_slug: str) -> Dict[str, Dict[str, str]]:
+    manifest_file = _workspace_attachments_dir(workspace_slug) / "manifest.json"
+    if not manifest_file.exists():
         return {}
     try:
-        data = json.loads(auth_file.read_text(encoding="utf-8"))
+        data = json.loads(manifest_file.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
-def _save_workspace_auth_registry(registry: Dict[str, Dict[str, str]]) -> None:
-    auth_file = _workspace_auth_store_path()
-    auth_file.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+def _save_attachment_manifest(workspace_slug: str, manifest: Dict[str, Dict[str, str]]) -> None:
+    manifest_file = _workspace_attachments_dir(workspace_slug) / "manifest.json"
+    manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _hash_workspace_password(password: str, salt_hex: str) -> str:
-    dk = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        bytes.fromhex(salt_hex),
-        120_000,
-    )
-    return dk.hex()
+def store_original_attachment(
+    workspace_slug: str,
+    file_sha256: str,
+    original_filename: str,
+    file_bytes: bytes,
+    invoice_keys: list[int] | None = None,
+) -> Path:
+    """
+    Save the uploaded original document once per SHA-256 inside the isolated
+    workspace attachments folder, and map invoice_keys -> SHA-256 in manifest.json.
+    """
+    att_dir = _workspace_attachments_dir(workspace_slug)
+    ext = Path(original_filename).suffix.lower() or ".bin"
+    safe_ext = re.sub(r"[^a-z0-9.]", "", ext) or ".bin"
+    stored_name = f"{file_sha256}{safe_ext}"
+    stored_path = att_dir / stored_name
+
+    # Deduplicate physical file write using SHA-256
+    if not stored_path.exists():
+        stored_path.write_bytes(file_bytes)
+
+    manifest = _load_attachment_manifest(workspace_slug)
+    files_map = manifest.setdefault("files", {})
+    files_map[file_sha256] = {
+        "stored_name": stored_name,
+        "original_filename": original_filename,
+    }
+    inv_map = manifest.setdefault("invoice_to_sha", {})
+    for ik in invoice_keys or []:
+        if ik is not None:
+            inv_map[str(int(ik))] = file_sha256
+
+    _save_attachment_manifest(workspace_slug, manifest)
+    return stored_path
 
 
-def is_named_workspace_registered(workspace_slug: str) -> bool:
-    registry = _load_workspace_auth_registry()
-    if workspace_slug in registry:
-        return True
-    # Also check legacy unprotected workspace DB if one already exists on disk
-    legacy_db = ROOT_DIR / "data" / "workspaces" / f"ws_{workspace_slug}.db"
-    return legacy_db.exists()
+def load_original_attachment_for_invoice(
+    workspace_slug: str,
+    invoice_key: int,
+    fallback_filename: str = "",
+) -> tuple[bytes | None, str, str]:
+    """
+    Safely retrieve the original file bytes, display filename, and MIME type
+    for an invoice_key. Never raises FileNotFoundError if ephemeral cloud
+    storage was wiped; returns (None, filename, mime) instead.
+    """
+    manifest = _load_attachment_manifest(workspace_slug)
+    inv_map = manifest.get("invoice_to_sha", {})
+    files_map = manifest.get("files", {})
+    sha = inv_map.get(str(int(invoice_key)))
 
+    target_path: Path | None = None
+    disp_name = fallback_filename or f"invoice_{invoice_key}"
 
-def register_named_workspace_password(workspace_slug: str, password: str) -> None:
-    registry = _load_workspace_auth_registry()
-    salt_hex = os.urandom(16).hex()
-    pw_hash = _hash_workspace_password(password, salt_hex)
-    registry[workspace_slug] = {"salt": salt_hex, "hash": pw_hash}
-    _save_workspace_auth_registry(registry)
+    if sha and sha in files_map:
+        meta = files_map[sha]
+        disp_name = meta.get("original_filename") or disp_name
+        candidate = _workspace_attachments_dir(workspace_slug) / meta.get("stored_name", "")
+        if candidate.is_file():
+            target_path = candidate
 
+    if target_path is None:
+        return None, disp_name, "application/octet-stream"
 
-def verify_named_workspace_password(workspace_slug: str, password: str) -> bool:
-    registry = _load_workspace_auth_registry()
-    entry = registry.get(workspace_slug)
-    if not entry:
-        # Legacy workspace created prior to password protection: set password on first unlock
-        register_named_workspace_password(workspace_slug, password)
-        return True
-    expected_hash = entry.get("hash", "")
-    salt_hex = entry.get("salt", "")
-    if not expected_hash or not salt_hex:
-        return False
-    candidate_hash = _hash_workspace_password(password, salt_hex)
-    return hmac.compare_digest(candidate_hash, expected_hash)
-
-
-def _get_server_gemini_key() -> str:
-    """Read the server-side Gemini API key strictly inside backend memory (never sent to UI)."""
     try:
-        secret_val = st.secrets.get("GEMINI_API_KEY", "")
-        if secret_val:
-            return str(secret_val).strip()
-    except Exception:
-        pass
-    return str(getattr(settings, "GEMINI_API_KEY", "") or "").strip()
+        raw_bytes = target_path.read_bytes()
+    except OSError:
+        return None, disp_name, "application/octet-stream"
 
-
-def sanitize_error_message(err: object) -> str:
-    """Redact any accidental API key or secret tokens from exception messages shown to users."""
-    msg = str(err)
-    msg = re.sub(r"AIza[0-9A-Za-z\-_]{20,}", "[REDACTED_API_KEY]", msg)
-    msg = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)['\"]?[^\s'\"]+['\"]?", r"\1[REDACTED]", msg)
-    return msg
-
-
-def evaluate_issue_date_realism(invoice_obj: object, lang: str = "ar") -> tuple[bool, str]:
-    """
-    Validate that the invoice issue date does not exceed the current date.
-    Returns (is_future_date, localized_warning_message).
-    """
-    raw_dt = getattr(invoice_obj, "issue_date", None) or getattr(invoice_obj, "invoice_date", None)
-    if raw_dt is None:
-        return False, ""
-    parsed_dt = pd.to_datetime(raw_dt, errors="coerce")
-    today_dt = date.today()
-    if pd.isna(parsed_dt) or parsed_dt.date() <= today_dt:
-        return False, ""
-
-    days_ahead = (parsed_dt.date() - today_dt).days
-    inv_dt_str = parsed_dt.date().isoformat()
-    today_str = today_dt.isoformat()
-    inv_num = getattr(invoice_obj, "invoice_number", "") or "N/A"
-    if lang == "ar":
-        msg = (
-            f"الفاتورة ({inv_num}): تاريخ الإصدار ({inv_dt_str}) يتعدى اليوم الحالي ({today_str}) "
+    ext = target_path.suffix.lower()
+    mime_lookup = {
+        ".pdf": "application/pdf",
+        ".csv": "text/csv",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    return raw_bytes, disp_name, mime_lookup.get(ext, "application/octet-stream")
             f"بفارق (+{days_ahead} يوم)."
         )
     elif lang == "fr":
@@ -1437,6 +1446,7 @@ def main() -> None:
                             continue
 
                         seen_hashes_in_batch[base_hash] = uploaded.name
+                        created_invoice_keys_for_file: list[int] = []
 
                         if lower_name.endswith(".pdf"):
                             invoice, lines = parse_invoice_pdf_native(file_bytes, api_key=effective_api_key)
@@ -1516,6 +1526,15 @@ def main() -> None:
                                         po_warnings.append(
                                             f"{uploaded.name} [{f.rule_code}]: {f.item_description} — {f.variance_detail}"
                                         )
+                            if isinstance(res, dict) and res.get("invoice_key") is not None:
+                                created_invoice_keys_for_file.append(int(res["invoice_key"]))
+                            store_original_attachment(
+                                workspace_slug=active_ws_slug,
+                                file_sha256=base_hash,
+                                original_filename=uploaded.name,
+                                file_bytes=file_bytes,
+                                invoice_keys=created_invoice_keys_for_file,
+                            )
                             existing_hashes.add(base_hash)
                             results.append(res)
                         else:
@@ -1604,8 +1623,17 @@ def main() -> None:
                                             po_warnings.append(
                                                 f"{uploaded.name} (#{idx}) [{f.rule_code}]: {f.item_description} — {f.variance_detail}"
                                             )
+                                if isinstance(res, dict) and res.get("invoice_key") is not None:
+                                    created_invoice_keys_for_file.append(int(res["invoice_key"]))
                                 existing_hashes.add(row_hash)
                                 results.append(res)
+                            store_original_attachment(
+                                workspace_slug=active_ws_slug,
+                                file_sha256=base_hash,
+                                original_filename=uploaded.name,
+                                file_bytes=file_bytes,
+                                invoice_keys=created_invoice_keys_for_file,
+                            )
                     except Exception as file_exc:
                         errors.append(
                             t("file_error", lang, filename=uploaded.name, err=sanitize_error_message(file_exc))
@@ -1781,9 +1809,20 @@ def main() -> None:
         st.dataframe(localized_invoices_df, use_container_width=True, column_config=invoice_col_cfg)
 
         valid_keys = df_invoices["invoice_key"].dropna().tolist()
+        def _format_invoice_selector(k: object) -> str:
+            sub = df_invoices[df_invoices["invoice_key"] == k]
+            if sub.empty:
+                return str(k)
+            r0 = sub.iloc[0]
+            inv_no = str(r0.get("invoice_number") or "—")
+            vnd = str(r0.get("vendor_name") or "—")
+            src = str(r0.get("source_filename") or "")
+            return f"#{int(k)} | {inv_no} — {vnd}" + (f" ({src})" if src else "")
+
         selected_key = st.selectbox(
             t("inspect_invoice_key", lang),
             options=valid_keys,
+            format_func=_format_invoice_selector,
         ) if valid_keys else None
 
         if selected_key is not None:
@@ -1792,7 +1831,30 @@ def main() -> None:
                 notes_val = row_match.iloc[0].get("summary_notes", "")
                 curr_disp_status = str(row_match.iloc[0].get("review_status") or "PENDING").upper()
                 curr_disp_note = str(row_match.iloc[0].get("reviewer_note") or "")
+                fallback_src_name = str(row_match.iloc[0].get("source_filename") or "")
+
                 st.info(f"{t('audit_notes_prefix', lang)}: {notes_val if pd.notna(notes_val) else '—'}")
+
+                # Original Document Download & Image Preview (with graceful missing-file guard)
+                orig_bytes, orig_name, orig_mime = load_original_attachment_for_invoice(
+                    workspace_slug=active_ws_slug,
+                    invoice_key=int(selected_key),
+                    fallback_filename=fallback_src_name,
+                )
+                with st.container(border=True):
+                    st.markdown(f"**{t('original_doc_section', lang)}**")
+                    if orig_bytes is not None:
+                        st.download_button(
+                            label=t("download_original_btn", lang, filename=orig_name),
+                            data=orig_bytes,
+                            file_name=orig_name,
+                            mime=orig_mime,
+                            key=f"dl_orig_doc_{int(selected_key)}",
+                        )
+                        if orig_mime.startswith("image/"):
+                            st.image(orig_bytes, caption=orig_name, use_container_width=True)
+                    else:
+                        st.caption(t("original_doc_missing_warn", lang))
 
                 with st.container(border=True):
                     st.markdown(f"**{t('disposition_section_title', lang)}**")
