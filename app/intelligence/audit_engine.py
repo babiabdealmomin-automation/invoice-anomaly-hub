@@ -1,263 +1,620 @@
-﻿import re
-from app.schemas import AuditedLineResult, ExtractedInvoice, IntelligenceVerdict
+"""
+Deterministic invoice auditing and risk-scoring engine.
+Evaluates arithmetic accuracy, historical price spikes, near-duplicate & split
+invoices, tax ID / bank account anomalies, future issue dates, and red-flag
+indicators, returning structured alerts with:
+- rule_triggered (اسم القاعدة المخالفة بالعربية)
+- evidence_comparison (القيمة المسجلة في الفاتورة مقابل القيمة المرجعية/المتوقعة)
+- recommended_action (الإجراء المحاسبي المطلوب قبل الصرف)
+"""
 
-TOLERANCE = 0.01
+from __future__ import annotations
 
-DEFAULT_RULE_WEIGHTS: dict[str, int] = {
-    "ARITHMETIC_MISMATCH": 45,
-    "PRICE_SPIKE": 30,
-    "NEAR_DUPLICATE_INVOICE": 35,
-    "SPLIT_INVOICE_PATTERN": 30,
-    "HIGH_RISK_RED_FLAGS": 30,
-    "THIRD_PARTY_OR_OFFSHORE_PAYEE": 25,
-    "NIF_MISMATCH": 25,
-    "BANK_ACCOUNT_CHANGED": 25,
-    "INVALID_NIF_FORMAT": 15,
-    "ROUND_HIGH_VALUE_TOTAL": 15,
-    "NON_POSITIVE_GRAND_TOTAL": 40,
-}
+import re
+from datetime import date
+from typing import Any, Dict, List, Optional, Sequence
 
-HIGH_RISK_KEYWORDS = (
-    "offshore",
-    "طرف ثالث",
-    "third party",
-    "بدون سند",
-    "بدون وصل",
-    "بدون أمر",
-    "شفهي",
-    "غير متعاقد",
-    "وساطة",
-    "تسهيلات",
-    "جزافي",
-    "استشارات",
-    "عاجل",
-    "فوري",
+from pydantic import BaseModel, Field
+
+from app.extraction.confidence_scorer import (
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    ExtractionConfidenceReport,
+    evaluate_extraction_confidence,
+)
+from app.intelligence.po_matcher import (
+    POMatchingReport,
+    ReferenceLineItem,
+    match_invoice_against_po,
 )
 
-OFFSHORE_PAYEE_KEYWORDS = ("offshore", "منطقة حرة", "طرف ثالث", "third party", "AE")
+DEFAULT_RULE_WEIGHTS: Dict[str, int] = {
+    "ARITHMETIC_MISMATCH": 35,
+    "PRICE_SPIKE": 25,
+    "NEAR_DUPLICATE_INVOICE": 30,
+    "SPLIT_INVOICE_PATTERN": 30,
+    "HIGH_RISK_RED_FLAGS": 25,
+    "THIRD_PARTY_OR_OFFSHORE_PAYEE": 35,
+    "ROUND_HIGH_VALUE_TOTAL": 15,
+    "NIF_MISMATCH": 30,
+    "INVALID_NIF_FORMAT": 20,
+    "BANK_ACCOUNT_CHANGED": 35,
+    "NON_POSITIVE_GRAND_TOTAL": 40,
+    "FUTURE_ISSUE_DATE": 35,
+    "LOW_EXTRACTION_CONFIDENCE": 25,
+    "PO_PRICE_MISMATCH": 35,
+    "PO_QTY_EXCEEDED": 35,
+    "UNAPPROVED_ITEM": 30,
+    "VENDOR_VOLUME_SPIKE": 35,
+}
+
+RULE_ARABIC_NAMES: Dict[str, str] = {
+    "ARITHMETIC_MISMATCH": "فرق في المطابقة الحسابية",
+    "PRICE_SPIKE": "ارتفاع غير معتاد في سعر الوحدة",
+    "NEAR_DUPLICATE_INVOICE": "اشتباه تكرار فاتورة لنفس المورّد",
+    "SPLIT_INVOICE_PATTERN": "اشتباه تجزئة المشتريات لتجاوز سقف الاعتماد",
+    "HIGH_RISK_RED_FLAGS": "مؤشرات رقابية تستوجب التحقق المستندي",
+    "THIRD_PARTY_OR_OFFSHORE_PAYEE": "تحويل الدفع لطرف ثالث أو حساب خارجي",
+    "ROUND_HIGH_VALUE_TOTAL": "مبلغ إجمالي مرتفع ومقرّب بالكامل",
+    "NIF_MISMATCH": "اختلاف الرقم الضريبي عن سجل المورّد",
+    "INVALID_NIF_FORMAT": "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة",
+    "BANK_ACCOUNT_CHANGED": "تغيير بيانات الحساب البنكي للمورّد",
+    "NON_POSITIVE_GRAND_TOTAL": "فاتورة بإجمالي صفري أو سالب",
+    "FUTURE_ISSUE_DATE": "تاريخ إصدار غير واقعي (مستقبلي)",
+    "LOW_EXTRACTION_CONFIDENCE": "انخفاض ثقة القراءة الآلية (NEEDS_HUMAN_REVIEW)",
+    "PO_PRICE_MISMATCH": "تجاوز سعر الوحدة لأمر الشراء / عرض السعر",
+    "PO_QTY_EXCEEDED": "تجاوز الكمية المفوترة لأمر الشراء",
+    "UNAPPROVED_ITEM": "بند غير مدرج في أمر الشراء / عرض السعر",
+    "VENDOR_VOLUME_SPIKE": "قفزة غير معتادة في قيمة فاتورة المورّد التاريخية (VENDOR_VOLUME_SPIKE)",
+}
 
 
-def normalize_item_label(description: str) -> str:
-    cleaned = re.sub(r"[^\w\s\u0600-\u06FF]", " ", description.lower().strip())
-    return re.sub(r"\s+", " ", cleaned).strip()
+class StructuredAuditAlert(BaseModel):
+    """Structured audit finding emitted for each triggered rule."""
+
+    rule_code: str = Field(..., description="Internal deterministic rule identifier")
+    severity: str = Field(default="MEDIUM", description="LOW | MEDIUM | HIGH")
+    weight_applied: int = Field(default=0, description="Risk points added by this rule")
+    rule_triggered: str = Field(..., description="اسم القاعدة المخالفة بالعربية")
+    evidence_comparison: str = Field(
+        ..., description="القيمة المسجلة في الفاتورة مقابل القيمة المرجعية/المتوقعة"
+    )
+    recommended_action: str = Field(..., description="الإجراء المحاسبي المطلوب قبل الصرف")
 
 
-def is_valid_algerian_nif(nif: str | None) -> bool:
-    if not nif:
-        return False
-    digits = re.sub(r"\D", "", nif)
-    return len(digits) in (15, 20)
+class AuditResult(BaseModel):
+    """Complete deterministic audit outcome for an invoice."""
+
+    expected_grand_total: float
+    discrepancy_amount: float
+    risk_score: float
+    risk_level: str
+    extraction_confidence_score: float = 100.0
+    needs_human_review: bool = False
+    extraction_review_tag: str = "VERIFIED_EXTRACTION"
+    extraction_report: Optional[ExtractionConfidenceReport] = None
+    po_matching_report: Optional[POMatchingReport] = None
+    alerts: List[StructuredAuditAlert] = Field(default_factory=list)
+    summary_notes: str = ""
 
 
-def score_to_risk_level(score: int) -> str:
-    if score >= 60:
-        return "HIGH"
-    if score >= 25:
-        return "MEDIUM"
-    return "LOW"
+def _build_alert(
+    rule_code: str,
+    severity: str,
+    weight_applied: int,
+    evidence_comparison: str,
+    recommended_action: str,
+) -> StructuredAuditAlert:
+    return StructuredAuditAlert(
+        rule_code=rule_code,
+        severity=severity,
+        weight_applied=weight_applied,
+        rule_triggered=RULE_ARABIC_NAMES.get(rule_code, rule_code),
+        evidence_comparison=evidence_comparison,
+        recommended_action=recommended_action,
+    )
 
 
-def _has_high_risk_red_flags(invoice: ExtractedInvoice, lines: list[dict]) -> list[str]:
-    found: list[str] = []
-    combined_text = " ".join(
-        [
-            str(invoice.vendor_name or ""),
-            str(invoice.invoice_number or ""),
-            str(invoice.bank_account or ""),
-            str(invoice.beneficiary_name or ""),
-            *[str(ln.get("item_description", "")) for ln in lines],
-        ]
-    ).lower()
-
-    matched_kw = [kw for kw in HIGH_RISK_KEYWORDS if kw in combined_text]
-    if len(matched_kw) >= 2:
-        found.append("HIGH_RISK_RED_FLAGS")
-
-    if float(invoice.grand_total_amount) >= 1_000_000 and float(invoice.grand_total_amount) % 500_000 == 0:
-        found.append("ROUND_HIGH_VALUE_TOTAL")
-
-    beneficiary_blob = f"{invoice.beneficiary_name or ''} {invoice.bank_account or ''}".lower()
-    if any(k.lower() in beneficiary_blob for k in OFFSHORE_PAYEE_KEYWORDS):
-        found.append("THIRD_PARTY_OR_OFFSHORE_PAYEE")
-
-    return found
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    try:
+        if val is None:
+            return default
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 
-def _detect_split_invoice(
-    grand_total: float,
-    split_candidates: list[float] | None,
-    procurement_threshold: float,
-) -> bool:
-    if not split_candidates or grand_total <= 0:
-        return False
-    combined_sum = grand_total + sum(float(x) for x in split_candidates)
-    under_or_near_threshold = grand_total <= procurement_threshold * 1.05
-    return under_or_near_threshold and (combined_sum >= procurement_threshold)
+def _parse_iso_date(val: Any) -> Optional[date]:
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    text = str(val).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
 
 
-def evaluate_invoice_intelligence(
-    invoice: ExtractedInvoice,
-    lines: list[dict],
-    historical_item_prices: dict[str, float] | None = None,
-    has_near_duplicate: bool = False,
+def evaluate_invoice_audit(
+    invoice: Any,
+    lines: Sequence[Any],
+    historical_avg_prices: Optional[Dict[str, float]] = None,
+    recent_vendor_invoices: Optional[Sequence[Dict[str, Any]]] = None,
+    known_vendor_nif: Optional[str] = None,
+    known_vendor_bank: Optional[str] = None,
     price_spike_threshold_pct: float = 25.0,
-    known_vendor_nif: str | None = None,
-    known_vendor_bank: str | None = None,
-    split_invoice_candidates: list[float] | None = None,
-    procurement_threshold: float = 3_500_000.0,
-    rule_weights: dict[str, int] | None = None,
-) -> IntelligenceVerdict:
-    history = historical_item_prices or {}
+    near_duplicate_days: int = 7,
+    procurement_threshold: float = 100000.0,
+    extraction_confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    reference_po_items: Optional[Sequence[ReferenceLineItem]] = None,
+    po_reference_number: str = "PO-REF",
+    po_vendor_name: str = "",
+    vendor_historical_avg_invoice: Optional[float] = None,
+    vendor_historical_invoice_count: int = 0,
+    vendor_volume_spike_multiplier: float = 2.5,
+    rule_weights: Optional[Dict[str, int]] = None,
+) -> AuditResult:
+    """
+    Execute deterministic accounting & fraud rules on a single invoice and its lines.
+    Every triggered rule produces a StructuredAuditAlert with:
+    - rule_triggered
+    - evidence_comparison
+    - recommended_action
+    """
     weights = {**DEFAULT_RULE_WEIGHTS, **(rule_weights or {})}
+    hist_prices = {str(k).strip().lower(): float(v) for k, v in (historical_avg_prices or {}).items() if v}
+    recent_invs = list(recent_vendor_invoices or [])
 
-    def _w(rule_name: str) -> int:
-        return max(0, int(weights.get(rule_name, 0)))
+    # ------------------------------------------------------------------
+    # 0. Post-Extraction Self-Verification & Confidence Scoring (0-100%)
+    # ------------------------------------------------------------------
+    confidence_report = evaluate_extraction_confidence(
+        invoice=invoice,
+        lines=lines,
+        confidence_threshold=extraction_confidence_threshold,
+    )
 
-    risk_score = 0
-    flags: list[str] = []
-    notes: list[str] = []
-    audited_lines: list[AuditedLineResult] = []
+    currency = str(getattr(invoice, "currency", "") or "").strip()
+    subtotal = _safe_float(getattr(invoice, "subtotal_amount", 0.0))
+    tax_amount = _safe_float(getattr(invoice, "tax_amount", 0.0))
+    discount_amount = _safe_float(getattr(invoice, "discount_amount", 0.0))
+    grand_total = _safe_float(getattr(invoice, "grand_total_amount", 0.0))
+    vendor_nif = str(getattr(invoice, "vendor_nif", "") or "").strip()
+    vendor_bank = str(
+        getattr(invoice, "vendor_bank_account", None)
+        or getattr(invoice, "bank_account", None)
+        or getattr(invoice, "iban", "")
+        or ""
+    ).strip()
+    issue_dt = _parse_iso_date(
+        getattr(invoice, "issue_date", None) or getattr(invoice, "invoice_date", None)
+    )
 
-    line_sum = 0.0
-    any_line_invalid = False
-    spike_rule_enabled = _w("PRICE_SPIKE") > 0
+    alerts: List[StructuredAuditAlert] = []
+    total_score = 0.0
 
-    for raw in lines:
-        qty = float(raw["quantity"])
-        price = float(raw["unit_price"])
-        extracted_total = float(raw["line_total"])
-        expected_line = round(qty * price, 4)
-        line_sum += expected_line
-
-        is_valid = (qty > 0) and (price >= 0) and (abs(extracted_total - expected_line) <= TOLERANCE)
-        if not is_valid:
-            any_line_invalid = True
-
-        norm_item = normalize_item_label(str(raw["item_description"]))
-        hist_avg = history.get(norm_item)
-        dev_pct: float | None = None
-        is_spike = False
-
-        if spike_rule_enabled and hist_avg is not None and hist_avg > 0:
-            dev_pct = round(((price - hist_avg) / hist_avg) * 100.0, 2)
-            if dev_pct > price_spike_threshold_pct:
-                is_spike = True
-                if "PRICE_SPIKE" not in flags:
-                    flags.append("PRICE_SPIKE")
-                notes.append(
-                    f"Line #{raw['line_number']} ({raw['item_description']}) unit price {price} is +{dev_pct}% above historical avg {hist_avg:.2f}."
-                )
-
-        audited_lines.append(
-            AuditedLineResult(
-                line_number=int(raw["line_number"]),
-                item_description=str(raw["item_description"]),
-                normalized_item=norm_item,
-                quantity=qty,
-                unit_price=price,
-                line_total=extracted_total,
-                expected_line_total=expected_line,
-                is_line_valid=is_valid,
-                historical_avg_price=hist_avg,
-                price_deviation_pct=dev_pct,
-                is_price_anomaly=is_spike,
+    w_conf = int(weights.get("LOW_EXTRACTION_CONFIDENCE", 0))
+    if confidence_report.needs_human_review and w_conf > 0:
+        total_score += w_conf
+        flagged_items = confidence_report.missing_fields + confidence_report.suspect_fields
+        flagged_str = "؛ ".join(flagged_items) if flagged_items else "عدم اكتمال أو تطابق حقول القراءة الآلية"
+        alerts.append(
+            _build_alert(
+                rule_code="LOW_EXTRACTION_CONFIDENCE",
+                severity="MEDIUM",
+                weight_applied=w_conf,
+                evidence_comparison=(
+                    f"درجة ثقة الاستخراج: {confidence_report.confidence_score:.1f}% مقابل الحد الأدنى المعتمد "
+                    f"{confidence_report.threshold_pct:g}% | الوسم: [{confidence_report.review_tag}] | "
+                    f"الحقول المتأثرة: {flagged_str}"
+                ),
+                recommended_action="مراجعة المستند الأصلي (PDF/صورة) بشرياً واستكمال أو تصحيح الحقول الناقصة قبل اعتماد القيد.",
             )
         )
 
-    expected_total = round(line_sum + float(invoice.tax_amount) - float(invoice.discount_amount), 4)
-    discrepancy = round(float(invoice.grand_total_amount) - expected_total, 4)
+    # ------------------------------------------------------------------
+    # 1. Arithmetic Reconciliation (Line items + Totals)
+    # ------------------------------------------------------------------
+    computed_lines_sum = 0.0
+    line_math_errors: List[str] = []
+    for idx, line in enumerate(lines, start=1):
+        qty = _safe_float(getattr(line, "quantity", 0.0))
+        unit_p = _safe_float(getattr(line, "unit_price", 0.0))
+        line_tot = _safe_float(getattr(line, "line_total", 0.0))
+        expected_line = round(qty * unit_p, 2)
+        computed_lines_sum += expected_line
+        if abs(line_tot - expected_line) > 0.05:
+            line_math_errors.append(
+                f"البند #{idx}: المسجّل {line_tot:,.2f} مقابل المتوقع {expected_line:,.2f} {currency}"
+            )
 
-    subtotal_ok = abs(float(invoice.subtotal_amount) - round(line_sum, 4)) <= TOLERANCE
-    grand_ok = abs(discrepancy) <= TOLERANCE
+    base_subtotal = computed_lines_sum if lines else subtotal
+    expected_grand_total = round(base_subtotal + tax_amount - discount_amount, 2)
+    discrepancy_amount = round(grand_total - expected_grand_total, 2)
 
-    if invoice.grand_total_amount <= 0 and _w("NON_POSITIVE_GRAND_TOTAL") > 0:
-        risk_score += _w("NON_POSITIVE_GRAND_TOTAL")
-        flags.append("NON_POSITIVE_GRAND_TOTAL")
-        notes.append("Grand total must be positive.")
-
-    if (any_line_invalid or not subtotal_ok or not grand_ok) and _w("ARITHMETIC_MISMATCH") > 0:
-        risk_score += _w("ARITHMETIC_MISMATCH")
-        flags.append("ARITHMETIC_MISMATCH")
-        notes.append(
-            f"Arithmetic discrepancy detected: grand_total={invoice.grand_total_amount}, expected_total={expected_total}, diff={discrepancy}."
+    w_math = int(weights.get("ARITHMETIC_MISMATCH", 0))
+    if w_math > 0 and (abs(discrepancy_amount) > 0.05 or line_math_errors):
+        total_score += w_math
+        evidence = (
+            f"الإجمالي المسجّل في الفاتورة: {grand_total:,.2f} {currency} | "
+            f"الإجمالي المحسوب المتوقع: {expected_grand_total:,.2f} {currency} | "
+            f"مقدار الفارق: {discrepancy_amount:+,.2f} {currency}"
+        )
+        if line_math_errors:
+            evidence += f" ({'؛ '.join(line_math_errors)})"
+        alerts.append(
+            _build_alert(
+                rule_code="ARITHMETIC_MISMATCH",
+                severity="HIGH",
+                weight_applied=w_math,
+                evidence_comparison=evidence,
+                recommended_action="إيقاف الصرف ومطالبة المورّد بإصدار فاتورة مصححة أو إشعار دائن/مدين لتسوية الفارق الحسابي.",
+            )
         )
 
-    if (
-        _w("INVALID_NIF_FORMAT") > 0
-        and invoice.tax_identifier
-        and not invoice.tax_identifier.upper().startswith("NIF-")
-        and not is_valid_algerian_nif(invoice.tax_identifier)
-    ):
-        risk_score += _w("INVALID_NIF_FORMAT")
-        flags.append("INVALID_NIF_FORMAT")
-        notes.append(f"Tax identifier '{invoice.tax_identifier}' does not match standard 15/20-digit NIF format.")
-
-    if (
-        _w("NIF_MISMATCH") > 0
-        and invoice.tax_identifier
-        and known_vendor_nif
-        and re.sub(r"\D", "", invoice.tax_identifier) != re.sub(r"\D", "", known_vendor_nif)
-    ):
-        risk_score += _w("NIF_MISMATCH")
-        flags.append("NIF_MISMATCH")
-        notes.append(f"NIF changed from '{known_vendor_nif}' to '{invoice.tax_identifier}'.")
-
-    clean_bank = re.sub(r"\s+", "", (invoice.bank_account or "")).upper()
-    clean_known_bank = re.sub(r"\s+", "", (known_vendor_bank or "")).upper()
-    if _w("BANK_ACCOUNT_CHANGED") > 0 and clean_bank and clean_known_bank and clean_bank != clean_known_bank:
-        risk_score += _w("BANK_ACCOUNT_CHANGED")
-        flags.append("BANK_ACCOUNT_CHANGED")
-        notes.append(f"Bank account changed from '{clean_known_bank}' to '{clean_bank}'.")
-
-    if "PRICE_SPIKE" in flags and spike_rule_enabled:
-        risk_score += _w("PRICE_SPIKE")
-
-    if has_near_duplicate and _w("NEAR_DUPLICATE_INVOICE") > 0:
-        risk_score += _w("NEAR_DUPLICATE_INVOICE")
-        flags.append("NEAR_DUPLICATE_INVOICE")
-        notes.append("Similar invoice amount and date found for the same vendor within recent window.")
-
-    if (
-        _w("SPLIT_INVOICE_PATTERN") > 0
-        and _detect_split_invoice(float(invoice.grand_total_amount), split_invoice_candidates, procurement_threshold)
-    ):
-        risk_score += _w("SPLIT_INVOICE_PATTERN")
-        flags.append("SPLIT_INVOICE_PATTERN")
-        combined = float(invoice.grand_total_amount) + sum(float(x) for x in (split_invoice_candidates or []))
-        notes.append(
-            f"Potential split-invoice pattern: combined spend {combined:,.2f} across recent invoices reaches/exceeds threshold {procurement_threshold:,.2f}."
+    # ------------------------------------------------------------------
+    # 2. Non-Positive Grand Total
+    # ------------------------------------------------------------------
+    w_nonpos = int(weights.get("NON_POSITIVE_GRAND_TOTAL", 0))
+    if w_nonpos > 0 and grand_total <= 0.0:
+        total_score += w_nonpos
+        alerts.append(
+            _build_alert(
+                rule_code="NON_POSITIVE_GRAND_TOTAL",
+                severity="HIGH",
+                weight_applied=w_nonpos,
+                evidence_comparison=(
+                    f"المبلغ الإجمالي المسجّل: {grand_total:,.2f} {currency} | "
+                    f"القيمة المرجعية المقبولة: أكبر من 0.00 {currency}"
+                ),
+                recommended_action="مراجعة المستند للتأكد مما إذا كان إشعار دائن (Credit Note) أو قيد تسوية قبل الترحيل المحاسبي.",
+            )
         )
 
-    red_flags = _has_high_risk_red_flags(invoice, lines)
-    if "HIGH_RISK_RED_FLAGS" in red_flags and _w("HIGH_RISK_RED_FLAGS") > 0:
-        risk_score += _w("HIGH_RISK_RED_FLAGS")
-        flags.append("HIGH_RISK_RED_FLAGS")
-        notes.append("High-risk procurement/payment red flags detected in invoice terms or descriptions.")
+    # ------------------------------------------------------------------
+    # 3. Future Issue Date Realism
+    # ------------------------------------------------------------------
+    w_future = int(weights.get("FUTURE_ISSUE_DATE", 0))
+    today_dt = date.today()
+    if w_future > 0 and issue_dt is not None and issue_dt > today_dt:
+        days_ahead = (issue_dt - today_dt).days
+        total_score += w_future
+        alerts.append(
+            _build_alert(
+                rule_code="FUTURE_ISSUE_DATE",
+                severity="HIGH",
+                weight_applied=w_future,
+                evidence_comparison=(
+                    f"تاريخ الإصدار المسجّل: {issue_dt.isoformat()} | "
+                    f"الحد المرجعي الأقصى (تاريخ اليوم): {today_dt.isoformat()} | "
+                    f"التجاوز: +{days_ahead} يوم"
+                ),
+                recommended_action="رفض الفاتورة مؤقتاً وإعادتها للمورّد لتصحيح تاريخ الإصدار بما يطابق تاريخ التوريد الفعلي.",
+            )
+        )
 
-    if "THIRD_PARTY_OR_OFFSHORE_PAYEE" in red_flags and _w("THIRD_PARTY_OR_OFFSHORE_PAYEE") > 0:
-        risk_score += _w("THIRD_PARTY_OR_OFFSHORE_PAYEE")
-        flags.append("THIRD_PARTY_OR_OFFSHORE_PAYEE")
-        notes.append("Third-party or offshore payment beneficiary/account detected.")
+    # ------------------------------------------------------------------
+    # 4. Unit Price Spike vs. Vendor Historical Baseline
+    # ------------------------------------------------------------------
+    w_spike = int(weights.get("PRICE_SPIKE", 0))
+    if w_spike > 0 and hist_prices:
+        for line in lines:
+            desc = str(getattr(line, "description", "") or "").strip()
+            unit_p = _safe_float(getattr(line, "unit_price", 0.0))
+            avg_p = hist_prices.get(desc.lower())
+            if avg_p and avg_p > 0 and unit_p > avg_p:
+                increase_pct = ((unit_p - avg_p) / avg_p) * 100.0
+                if increase_pct > price_spike_threshold_pct:
+                    total_score += w_spike
+                    alerts.append(
+                        _build_alert(
+                            rule_code="PRICE_SPIKE",
+                            severity="MEDIUM",
+                            weight_applied=w_spike,
+                            evidence_comparison=(
+                                f"البند ({desc}): السعر المسجّل {unit_p:,.2f} {currency} مقابل "
+                                f"متوسط السعر التاريخي للمورّد {avg_p:,.2f} {currency} "
+                                f"(زيادة +{increase_pct:.1f}% تتجاوز العتبة {price_spike_threshold_pct:g}%)"
+                            ),
+                            recommended_action="مطابقة السعر مع العقد الإطاري أو أمر الشراء المعتمد وطلب مبرر خطي للزيادة السعرية قبل الاعتماد.",
+                        )
+                    )
+                    break
 
-    if "ROUND_HIGH_VALUE_TOTAL" in red_flags and _w("ROUND_HIGH_VALUE_TOTAL") > 0:
-        risk_score += _w("ROUND_HIGH_VALUE_TOTAL")
-        flags.append("ROUND_HIGH_VALUE_TOTAL")
-        notes.append("Large round grand total detected.")
+    # ------------------------------------------------------------------
+    # 5. Near-Duplicate Invoice Detection
+    # ------------------------------------------------------------------
+    w_dup = int(weights.get("NEAR_DUPLICATE_INVOICE", 0))
+    if w_dup > 0 and recent_invs and grand_total > 0:
+        for prev in recent_invs:
+            prev_amt = _safe_float(prev.get("grand_total_amount", 0.0))
+            prev_num = str(prev.get("invoice_number", "N/A"))
+            prev_dt = _parse_iso_date(prev.get("invoice_date"))
+            within_window = True
+            days_diff_label = ""
+            if issue_dt and prev_dt:
+                diff_days = abs((issue_dt - prev_dt).days)
+                within_window = diff_days <= near_duplicate_days
+                days_diff_label = f"خلال {diff_days} يوم/أيام"
+            if within_window and prev_amt > 0 and abs(grand_total - prev_amt) / prev_amt <= 0.01:
+                total_score += w_dup
+                alerts.append(
+                    _build_alert(
+                        rule_code="NEAR_DUPLICATE_INVOICE",
+                        severity="HIGH",
+                        weight_applied=w_dup,
+                        evidence_comparison=(
+                            f"مبلغ الفاتورة الحالية: {grand_total:,.2f} {currency} مقابل "
+                            f"الفاتورة السابقة رقم ({prev_num}) بمبلغ {prev_amt:,.2f} {currency} {days_diff_label}"
+                        ),
+                        recommended_action="تعليق الصرف فوراً والتحقق من سجل المدفوعات ومحاضر الاستلام لمنع ازدواجية السداد لنفس التوريد.",
+                    )
+                )
+                break
 
-    risk_score = min(100, risk_score)
-    risk_level = score_to_risk_level(risk_score)
-    audit_status = "PASSED" if (not any_line_invalid and subtotal_ok and grand_ok) else "FAILED"
+    # ------------------------------------------------------------------
+    # 6. Split-Invoice Pattern (Below Direct Approval Limit)
+    # ------------------------------------------------------------------
+    w_split = int(weights.get("SPLIT_INVOICE_PATTERN", 0))
+    if w_split > 0 and recent_invs and 0 < grand_total < procurement_threshold:
+        window_sum = grand_total
+        matched_nums: List[str] = []
+        for prev in recent_invs:
+            prev_amt = _safe_float(prev.get("grand_total_amount", 0.0))
+            prev_dt = _parse_iso_date(prev.get("invoice_date"))
+            if issue_dt and prev_dt and abs((issue_dt - prev_dt).days) > near_duplicate_days:
+                continue
+            if 0 < prev_amt < procurement_threshold:
+                window_sum += prev_amt
+                matched_nums.append(str(prev.get("invoice_number", "N/A")))
+        if matched_nums and window_sum >= procurement_threshold:
+            total_score += w_split
+            alerts.append(
+                _build_alert(
+                    rule_code="SPLIT_INVOICE_PATTERN",
+                    severity="HIGH",
+                    weight_applied=w_split,
+                    evidence_comparison=(
+                        f"مجموع الفواتير المتقاربة للمورّد ({len(matched_nums) + 1} فواتير): "
+                        f"{window_sum:,.2f} {currency} مقابل سقف الاعتماد المباشر {procurement_threshold:,.2f} {currency}"
+                    ),
+                    recommended_action="إحالة المعاملة للجنة المشتريات العليا والحصول على تفويض الصلاحية الأعلى للتحقق من عدم تجزئة الطلب.",
+                )
+            )
 
-    if not notes:
-        notes.append("Invoice passed deterministic arithmetic, identifier, and anomaly checks.")
+    # ------------------------------------------------------------------
+    # 7. Tax ID (NIF) Format & Historical Consistency
+    # ------------------------------------------------------------------
+    w_nif_fmt = int(weights.get("INVALID_NIF_FORMAT", 0))
+    if w_nif_fmt > 0 and vendor_nif:
+        cleaned_nif = re.sub(r"\s+", "", vendor_nif)
+        if not re.fullmatch(r"[A-Za-z0-9]{10,20}", cleaned_nif):
+            total_score += w_nif_fmt
+            alerts.append(
+                _build_alert(
+                    rule_code="INVALID_NIF_FORMAT",
+                    severity="MEDIUM",
+                    weight_applied=w_nif_fmt,
+                    evidence_comparison=(
+                        f"الرقم الضريبي المسجّل في الفاتورة: '{vendor_nif}' | "
+                        f"الصيغة المرجعية المعتمدة: 10 إلى 20 خانة رقمية/حرفية نظامية"
+                    ),
+                    recommended_action="طلب صورة السجل التجاري والبطاقة الضريبية المحدّثة من المورّد قبل تسجيل الفاتورة ضريبياً.",
+                )
+            )
 
-    return IntelligenceVerdict(
-        audit_status=audit_status,
-        expected_total=expected_total,
-        discrepancy_amount=discrepancy,
-        risk_score=risk_score,
+    w_nif_mis = int(weights.get("NIF_MISMATCH", 0))
+    if w_nif_mis > 0 and vendor_nif and known_vendor_nif and vendor_nif != known_vendor_nif:
+        total_score += w_nif_mis
+        alerts.append(
+            _build_alert(
+                rule_code="NIF_MISMATCH",
+                severity="HIGH",
+                weight_applied=w_nif_mis,
+                evidence_comparison=(
+                    f"الرقم الضريبي في الفاتورة: '{vendor_nif}' مقابل "
+                    f"الرقم الضريبي المعتمد في ملف المورّد: '{known_vendor_nif}'"
+                ),
+                recommended_action="تجميد الفاتورة والتحقق من الهوية القانونية للمورّد وتحديث بياناته الرسمية فقط بعد اعتماد الإدارة المالية.",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 8. Vendor Bank Account / IBAN Change
+    # ------------------------------------------------------------------
+    w_bank = int(weights.get("BANK_ACCOUNT_CHANGED", 0))
+    if w_bank > 0 and vendor_bank and known_vendor_bank and vendor_bank != known_vendor_bank:
+        total_score += w_bank
+        alerts.append(
+            _build_alert(
+                rule_code="BANK_ACCOUNT_CHANGED",
+                severity="HIGH",
+                weight_applied=w_bank,
+                evidence_comparison=(
+                    f"الحساب البنكي/الآيبان في الفاتورة: '{vendor_bank}' مقابل "
+                    f"الحساب المعتمد مسبقاً للمورّد: '{known_vendor_bank}'"
+                ),
+                recommended_action="التحقق من رقم الآيبان عبر اتصال هاتفي موثق بالمورّد وطلب شهادة بنكية مختومة قبل الصرف.",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 9. High-Risk Textual Red Flags & Third-Party / Offshore Payees
+    # ------------------------------------------------------------------
+    combined_text = " ".join(
+        [
+            str(getattr(invoice, "notes", "") or ""),
+            str(getattr(invoice, "payment_terms", "") or ""),
+            *(str(getattr(l, "description", "") or "") for l in lines),
+        ]
+    ).lower()
+
+    w_offshore = int(weights.get("THIRD_PARTY_OR_OFFSHORE_PAYEE", 0))
+    offshore_hits = [
+        kw for kw in ("offshore", "third party", "third-party", "free zone", "طرف ثالث", "حساب خارجي")
+        if kw in combined_text
+    ]
+    if w_offshore > 0 and offshore_hits:
+        total_score += w_offshore
+        alerts.append(
+            _build_alert(
+                rule_code="THIRD_PARTY_OR_OFFSHORE_PAYEE",
+                severity="HIGH",
+                weight_applied=w_offshore,
+                evidence_comparison=(
+                    f"مؤشرات مرصودة في بيانات السداد: ({', '.join(offshore_hits)}) مقابل "
+                    f"السياسة المرجعية: السداد المباشر لحساب المورّد المتعاقد فقط"
+                ),
+                recommended_action="منع التحويل لطرف ثالث أو حساب خارجي وإحالة المستند لإدارة الامتثال والمراجعة الداخلية.",
+            )
+        )
+
+    w_flags = int(weights.get("HIGH_RISK_RED_FLAGS", 0))
+    red_flag_hits = [
+        kw
+        for kw in (
+            "urgent",
+            "no po",
+            "without po",
+            "misc services",
+            "consulting fee",
+            "بدون أمر شراء",
+            "عاجل جداً",
+            "خدمات متنوعة",
+        )
+        if kw in combined_text
+    ]
+    if w_flags > 0 and red_flag_hits:
+        total_score += w_flags
+        alerts.append(
+            _build_alert(
+                rule_code="HIGH_RISK_RED_FLAGS",
+                severity="MEDIUM",
+                weight_applied=w_flags,
+                evidence_comparison=(
+                    f"عبارات تستوجب التدقيق المستندي: ({', '.join(red_flag_hits)}) مقابل "
+                    f"المتطلب الرقابي: وصف تفصيلي للخدمة/التوريد مرفق بأمر شراء معتمد"
+                ),
+                recommended_action="طلب إرفاق أمر الشراء (PO) ومحضر الاستلام الفني الموقّع وتفصيل نطاق الأعمال قبل اعتماد الصرف.",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 10. Round High-Value Total
+    # ------------------------------------------------------------------
+    w_round = int(weights.get("ROUND_HIGH_VALUE_TOTAL", 0))
+    if (
+        w_round > 0
+        and grand_total >= (procurement_threshold * 0.5)
+        and grand_total % 1000 == 0
+    ):
+        total_score += w_round
+        alerts.append(
+            _build_alert(
+                rule_code="ROUND_HIGH_VALUE_TOTAL",
+                severity="LOW",
+                weight_applied=w_round,
+                evidence_comparison=(
+                    f"المبلغ الإجمالي المسجّل: {grand_total:,.2f} {currency} (رقم صحيح مقرّب بالكامل) | "
+                    f"حد الفحص المرجعي: {procurement_threshold * 0.5:,.2f} {currency}"
+                ),
+                recommended_action="مراجعة جدول الكميات والأسعار الإفرادية للتأكد من أن المبلغ ناتج عن تسعير فعلي وليس تقديراً جزافياً.",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 11. 2-Way Purchase Order (PO) / Quotation Matching
+    # ------------------------------------------------------------------
+    po_report: Optional[POMatchingReport] = None
+    if reference_po_items:
+        po_report = match_invoice_against_po(
+            invoice=invoice,
+            invoice_lines=lines,
+            po_items=reference_po_items,
+            po_reference_number=po_reference_number,
+            po_vendor_name=po_vendor_name,
+        )
+        po_actions = {
+            "PO_PRICE_MISMATCH": "إيقاف الصرف ومطالبة المورّد بتعديل السعر ليتطابق مع أمر الشراء / عرض السعر المعتمد.",
+            "PO_QTY_EXCEEDED": "حجز الكمية الزائدة ومراجعة محضر الاستلام المخزني وطلب أمر تغيير معتمد قبل الصرف.",
+            "UNAPPROVED_ITEM": "رفض البند غير المعتمد وإعادته لإدارة المشتريات للتحقق من وجود تفويض مسبق لتوريده.",
+        }
+        for finding in po_report.findings:
+            w_po = int(weights.get(finding.rule_code, 0))
+            if w_po > 0:
+                total_score += w_po
+                alerts.append(
+                    _build_alert(
+                        rule_code=finding.rule_code,
+                        severity=finding.severity,
+                        weight_applied=w_po,
+                        evidence_comparison=(
+                            f"البند ({finding.item_description}) [{po_report.po_reference_number}]: "
+                            f"المسجّل في الفاتورة ({finding.invoice_value}) مقابل المرجع ({finding.po_reference_value}) | "
+                            f"{finding.variance_detail}"
+                        ),
+                        recommended_action=po_actions.get(
+                            finding.rule_code,
+                            "مطابقة البند مع أمر الشراء المعتمد قبل الصرف.",
+                        ),
+                    )
+                )
+
+    # ------------------------------------------------------------------
+    # 12. Vendor Behavioral Profiling: VENDOR_VOLUME_SPIKE
+    # ------------------------------------------------------------------
+    w_vol = int(weights.get("VENDOR_VOLUME_SPIKE", 0))
+    if (
+        w_vol > 0
+        and vendor_historical_invoice_count >= 3
+        and vendor_historical_avg_invoice is not None
+        and vendor_historical_avg_invoice > 0
+        and grand_total >= (vendor_historical_avg_invoice * vendor_volume_spike_multiplier)
+    ):
+        multiple = grand_total / vendor_historical_avg_invoice
+        total_score += w_vol
+        alerts.append(
+            _build_alert(
+                rule_code="VENDOR_VOLUME_SPIKE",
+                severity="HIGH",
+                weight_applied=w_vol,
+                evidence_comparison=(
+                    f"قيمة الفاتورة الحالية: {grand_total:,.2f} {currency} مقابل المتوسط التاريخي للمورّد "
+                    f"({vendor_historical_avg_invoice:,.2f} {currency} عبر {vendor_historical_invoice_count} فواتير سابقة) — "
+                    f"تضاعف بمقدار {multiple:.1f}x (يتجاوز الحد {vendor_volume_spike_multiplier:g}x)"
+                ),
+                recommended_action="طلب موافقة استثنائية ومراجعة محاضر الاستلام والتعاقد للتحقق من سبب تضاعف قيمة الفاتورة عن نمط المورّد المعتاد.",
+            )
+        )
+
+    final_score = min(100.0, round(total_score, 2))
+    if final_score >= 60.0 or any(a.severity == "HIGH" for a in alerts):
+        risk_level = "HIGH"
+    elif final_score >= 25.0 or alerts:
+        risk_level = "MEDIUM"
+    else:
+        risk_level = "LOW"
+
+    if alerts:
+        summary_notes = " || ".join(
+            f"[{a.rule_triggered}] {a.evidence_comparison} -> الإجراء المطلوب: {a.recommended_action}"
+            for a in alerts
+        )
+    else:
+        summary_notes = "اجتازت الفاتورة جميع فحوصات المطابقة الحسابية والرقابية بنجاح."
+
+    return AuditResult(
+        expected_grand_total=expected_grand_total,
+        discrepancy_amount=discrepancy_amount,
+        risk_score=final_score,
         risk_level=risk_level,
-        risk_flags=flags,
-        summary_notes=" ".join(notes),
-        lines=audited_lines,
+        extraction_confidence_score=confidence_report.confidence_score,
+        needs_human_review=confidence_report.needs_human_review,
+        extraction_review_tag=confidence_report.review_tag,
+        extraction_report=confidence_report,
+        po_matching_report=po_report,
+        alerts=alerts,
+        summary_notes=summary_notes,
     )
