@@ -1590,25 +1590,28 @@ def main() -> None:
                                 res["risk_level"] = "HIGH"
                                 res["future_issue_date_alert"] = dt_warn
                             if isinstance(res, dict):
-                                v_spike = evaluate_vendor_volume_spike(
-                                    conn_or_session=session,
-                                    vendor_name=str(getattr(invoice, "vendor_name", "") or ""),
-                                    current_invoice_amount=float(getattr(invoice, "grand_total_amount", 0.0) or 0.0),
-                                    exclude_invoice_key=res.get("invoice_key"),
-                                )
-                                if v_spike.triggered:
-                                    enforce_vendor_volume_spike_flag(
-                                        session,
-                                        res.get("invoice_key"),
-                                        v_spike,
-                                        currency=str(getattr(invoice, "currency", "") or selected_currency),
-                                        rule_weight=int(active_weights.get("VENDOR_VOLUME_SPIKE", 35)),
+                                try:
+                                    v_spike = evaluate_vendor_volume_spike(
+                                        conn_or_session=session,
+                                        vendor_name=str(getattr(invoice, "vendor_name", "") or ""),
+                                        current_invoice_amount=float(getattr(invoice, "grand_total_amount", 0.0) or 0.0),
+                                        exclude_invoice_key=res.get("invoice_key"),
                                     )
-                                    res["risk_level"] = "HIGH"
-                                    res["vendor_volume_spike"] = v_spike.model_dump()
-                                    vendor_spike_warnings.append(
-                                        f"{uploaded.name} ({v_spike.vendor_name}): {v_spike.current_invoice_amount:,.2f} مقابل المتوسط التاريخي {v_spike.historical_avg_invoice:,.2f} ({v_spike.spike_multiple:.1f}x)"
-                                    )
+                                    if v_spike.triggered:
+                                        enforce_vendor_volume_spike_flag(
+                                            session,
+                                            res.get("invoice_key"),
+                                            v_spike,
+                                            currency=str(getattr(invoice, "currency", "") or selected_currency),
+                                            rule_weight=int(active_weights.get("VENDOR_VOLUME_SPIKE", 35)),
+                                        )
+                                        res["risk_level"] = "HIGH"
+                                        res["vendor_volume_spike"] = v_spike.model_dump()
+                                        vendor_spike_warnings.append(
+                                            f"{uploaded.name} ({v_spike.vendor_name}): {v_spike.current_invoice_amount:,.2f} مقابل المتوسط التاريخي {v_spike.historical_avg_invoice:,.2f} ({v_spike.spike_multiple:.1f}x)"
+                                        )
+                                except Exception:
+                                    pass
                             if po_ref_items and isinstance(res, dict):
                                 po_report = match_invoice_against_po(
                                     invoice=invoice,
@@ -1687,25 +1690,28 @@ def main() -> None:
                                     res["risk_level"] = "HIGH"
                                     res["future_issue_date_alert"] = dt_warn
                                 if isinstance(res, dict):
-                                    v_spike = evaluate_vendor_volume_spike(
-                                        conn_or_session=session,
-                                        vendor_name=str(getattr(invoice, "vendor_name", "") or ""),
-                                        current_invoice_amount=float(getattr(invoice, "grand_total_amount", 0.0) or 0.0),
-                                        exclude_invoice_key=res.get("invoice_key"),
-                                    )
-                                    if v_spike.triggered:
-                                        enforce_vendor_volume_spike_flag(
-                                            session,
-                                            res.get("invoice_key"),
-                                            v_spike,
-                                            currency=str(getattr(invoice, "currency", "") or selected_currency),
-                                            rule_weight=int(active_weights.get("VENDOR_VOLUME_SPIKE", 35)),
+                                    try:
+                                        v_spike = evaluate_vendor_volume_spike(
+                                            conn_or_session=session,
+                                            vendor_name=str(getattr(invoice, "vendor_name", "") or ""),
+                                            current_invoice_amount=float(getattr(invoice, "grand_total_amount", 0.0) or 0.0),
+                                            exclude_invoice_key=res.get("invoice_key"),
                                         )
-                                        res["risk_level"] = "HIGH"
-                                        res["vendor_volume_spike"] = v_spike.model_dump()
-                                        vendor_spike_warnings.append(
-                                            f"{uploaded.name} (#{idx}) ({v_spike.vendor_name}): {v_spike.current_invoice_amount:,.2f} مقابل المتوسط التاريخي {v_spike.historical_avg_invoice:,.2f} ({v_spike.spike_multiple:.1f}x)"
-                                        )
+                                        if v_spike.triggered:
+                                            enforce_vendor_volume_spike_flag(
+                                                session,
+                                                res.get("invoice_key"),
+                                                v_spike,
+                                                currency=str(getattr(invoice, "currency", "") or selected_currency),
+                                                rule_weight=int(active_weights.get("VENDOR_VOLUME_SPIKE", 35)),
+                                            )
+                                            res["risk_level"] = "HIGH"
+                                            res["vendor_volume_spike"] = v_spike.model_dump()
+                                            vendor_spike_warnings.append(
+                                                f"{uploaded.name} (#{idx}) ({v_spike.vendor_name}): {v_spike.current_invoice_amount:,.2f} مقابل المتوسط التاريخي {v_spike.historical_avg_invoice:,.2f} ({v_spike.spike_multiple:.1f}x)"
+                                            )
+                                    except Exception:
+                                        pass
                                 if po_ref_items and isinstance(res, dict):
                                     po_report = match_invoice_against_po(
                                         invoice=invoice,
