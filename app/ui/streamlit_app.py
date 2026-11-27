@@ -1331,9 +1331,6 @@ def main() -> None:
 
             if ws_mode == "isolated":
                 active_ws_slug = st.session_state["session_workspace_id"]
-                if st.button(t("new_isolated_session_btn", lang), use_container_width=True):
-                    st.session_state["session_workspace_id"] = f"sess_{uuid.uuid4().hex[:10]}"
-                    st.rerun()
                 st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
             else:
                 unlocked_set: Set[str] = st.session_state.setdefault("unlocked_named_workspaces", set())
