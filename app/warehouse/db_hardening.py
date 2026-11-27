@@ -83,78 +83,85 @@ def ensure_composite_audit_indexes(engine: Engine) -> None:
                 )
             )
 
+        # Ensure Audit Disposition columns exist on fact_invoices (safe schema migration)
+        if "review_status" not in existing_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE fact_invoices "
+                    "ADD COLUMN review_status TEXT NOT NULL DEFAULT 'PENDING';"
+                )
+            )
+        if "reviewer_note" not in existing_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE fact_invoices "
+                    "ADD COLUMN reviewer_note TEXT DEFAULT '';"
+                )
+            )
 
-def upsert_sqlite_on_conflict(
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_fact_invoices_review_status "
+                "ON fact_invoices (review_status);"
+            )
+        )
+
+
+def update_invoice_disposition(
     engine: Engine,
-    table_name: str,
-    record: Dict[str, Any],
-    conflict_columns: Sequence[str],
-    update_columns: Optional[Sequence[str]] = None,
+    invoice_key: int,
+    review_status: str,
+    reviewer_note: str = "",
 ) -> None:
     """
-    Perform a safe SQLite UPSERT using:
-        INSERT INTO ... VALUES (...) ON CONFLICT(...) DO UPDATE SET ...
-    instead of INSERT OR REPLACE, preserving existing row IDs and foreign key
-    relationships in child tables while updating only target fields.
+    Persist the accountant's audit disposition decision (PENDING, APPROVED, FLAGGED, DISMISSED)
+    and justification note for a specific invoice in fact_invoices.
     """
-    if not record:
-        return
-
-    all_cols = list(record.keys())
-    target_update_cols = (
-        list(update_columns)
-        if update_columns is not None
-        else [c for c in all_cols if c not in conflict_columns]
-    )
-
-    cols_clause = ", ".join(all_cols)
-    placeholders_clause = ", ".join(f":{c}" for c in all_cols)
-    conflict_clause = ", ".join(conflict_columns)
-
-    if target_update_cols:
-        set_clause = ", ".join(f"{c} = excluded.{c}" for c in target_update_cols)
-        sql = (
-            f"INSERT INTO {table_name} ({cols_clause}) "
-            f"VALUES ({placeholders_clause}) "
-            f"ON CONFLICT({conflict_clause}) DO UPDATE SET {set_clause};"
-        )
-    else:
-        sql = (
-            f"INSERT INTO {table_name} ({cols_clause}) "
-            f"VALUES ({placeholders_clause}) "
-            f"ON CONFLICT({conflict_clause}) DO NOTHING;"
-        )
+    allowed_statuses = {"PENDING", "APPROVED", "FLAGGED", "DISMISSED"}
+    clean_status = review_status.strip().upper()
+    if clean_status not in allowed_statuses:
+        raise ValueError(f"Unsupported review_status: {review_status}")
 
     with engine.begin() as conn:
-        conn.execute(text(sql), record)
+        conn.execute(
+            text(
+                """
+                UPDATE fact_invoices
+                SET review_status = :status,
+                    reviewer_note = :note
+                WHERE invoice_key = :inv_key;
+                """
+            ),
+            {
+                "status": clean_status,
+                "note": reviewer_note.strip(),
+                "inv_key": int(invoice_key),
+            },
+        )
 
 
-def normalize_and_validate_dataframe(
-    df: Optional[pd.DataFrame],
-    required_columns: Iterable[str] = (),
-    numeric_columns: Iterable[str] = (),
-) -> pd.DataFrame:
-    """
-    Normalize DataFrame column casing/whitespace, validate required columns
-    to prevent KeyError, and coerce numeric columns WITHOUT blindly replacing
-    missing values (NaN) with 0.0 so genuine zeros remain distinguishable
-    from missing data.
-    """
-    if df is None:
-        return pd.DataFrame(columns=list(required_columns))
-
-    clean_df = df.copy()
-    clean_df.columns = [str(col).strip().lower() for col in clean_df.columns]
-
-    for col in required_columns:
-        col_lower = col.strip().lower()
-        if col_lower not in clean_df.columns:
-            clean_df[col_lower] = pd.NA
-
-    for num_col in numeric_columns:
-        col_lower = num_col.strip().lower()
-        if col_lower in clean_df.columns:
-            # Coerce invalid strings to NaN/NA while preserving missingness (do NOT fillna(0.0))
-            clean_df[col_lower] = pd.to_numeric(clean_df[col_lower], errors="coerce")
-
-    return clean_df
+def fetch_invoice_dispositions_map(engine: Engine) -> Dict[int, Dict[str, str]]:
+    """Return a lookup dictionary mapping invoice_key -> {review_status, reviewer_note}."""
+    with engine.begin() as conn:
+        cols_rows = conn.execute(text("PRAGMA table_info(fact_invoices);")).fetchall()
+        existing_cols = {str(row[1]).lower() for row in cols_rows}
+        if "invoice_key" not in existing_cols or "review_status" not in existing_cols:
+            return {}
+        rows = conn.execute(
+            text(
+                """
+                SELECT invoice_key,
+                       COALESCE(NULLIF(TRIM(review_status), ''), 'PENDING') AS review_status,
+                       COALESCE(reviewer_note, '') AS reviewer_note
+                FROM fact_invoices;
+                """
+            )
+        ).fetchall()
+    return {
+        int(r[0]): {
+            "review_status": str(r[1]).upper(),
+            "reviewer_note": str(r[2] or ""),
+        }
+        for r in rows
+        if r[0] is not None
+    }

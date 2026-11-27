@@ -23,14 +23,28 @@ import streamlit as st
 
 from app.config import settings
 from app.extraction.ai_parser import parse_invoice_pdf_native
+from app.extraction.confidence_scorer import (
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    evaluate_extraction_confidence,
+)
 from app.extraction.pdf_reader import compute_sha256
 from app.extraction.tabular_importer import parse_tabular_invoices
 from app.intelligence.audit_engine import DEFAULT_RULE_WEIGHTS
+from app.intelligence.po_matcher import (
+    match_invoice_against_po,
+    parse_reference_po_document,
+)
 from app.warehouse.models import FactInvoice, build_engine, build_session_factory
 from app.warehouse.db_hardening import (
     configure_sqlite_wal_and_timeout,
     ensure_composite_audit_indexes,
+    fetch_invoice_dispositions_map,
     normalize_and_validate_dataframe,
+    update_invoice_disposition,
+)
+from app.warehouse.vendor_profiler import (
+    evaluate_vendor_volume_spike,
+    fetch_all_vendor_profiles_dataframe,
 )
 from app.warehouse.repository import (
     fetch_invoices_dataframe,
@@ -82,8 +96,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "vat_rate_pct": "نسبة ضريبة القيمة المضافة القياسية (VAT %)",
         "vat_tolerance_pct": "هامش التسامح في مطابقة الضريبة (%)",
         "price_spike_pct": "عتبة ارتفاع سعر الوحدة (%)",
-        "near_duplicate_days": "نافذة رصد التكرار والتجزئة (بالأيام)",
+        "near_duplicate_days": "نافذة رصد التكرار والتجزئة (أيام)",
         "procurement_threshold": "سقف الاعتماد المالي المباشر ({currency})",
+        "confidence_threshold_pct": "حد ثقة القراءة الآلية الأدنى (%)",
         "sidebar_warehouse": "🗄️ صيانة مستودع البيانات",
         "reset_warehouse_btn": "🗑️ إعادة تهيئة المستودع",
         "reset_warehouse_success": "تم تفريغ المستودع وإعادة تهيئته بنجاح.",
@@ -92,6 +107,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "section_ingest": "1. استيراد الفواتير (PDF / CSV / XLSX)",
         "upload_label": "ارفع ملفات الفواتير (PDF أو CSV أو XLSX)",
         "upload_help": "يمكنك تحديد ورفع عدة ملفات دفعة واحدة باللغات العربية والفرنسية والإنجليزية مع منع التكرار الحرفي عبر بصمة SHA-256.",
+        "po_upload_label": "📎 مستند مرجعي للمطابقة الثنائية (اختياري: أمر شراء PO أو عرض سعر PDF/CSV/XLSX)",
+        "po_upload_help": "ارفع أمر الشراء أو عرض السعر المعتمد لمطابقة أسعار الوحدة والكميات وكشف البنود غير المعتمدة تلقائياً.",
+        "po_mismatch_warning": "📋 تنبيه المطابقة الثنائية مع أمر الشراء ({po_ref}): تم رصد {count} مخالفة في الأسعار أو الكميات أو البنود غير المعتمدة.",
         "process_btn": "🚀 تحليل وتخزين الملفات في المستودع",
         "processing_spinner": "جارٍ استخراج البيانات وإجراء التدقيق الحسابي وتقييم المخاطر...",
         "processing_file": "جارٍ معالجة الملف ({current}/{total}): {filename}...",
@@ -109,9 +127,24 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "kpi_total_discrepancy": "إجمالي الفروقات الحسابية ({currency})",
         "vat_audit_warning": "⚠️ تنبيه ضريبي: تم رصد {count} فاتورة يختلف فيها مبلغ ضريبة القيمة المضافة عن النسبة القياسية ({vat}%).",
         "future_date_warning": "📅 تنبيه واقعية التاريخ: تم رصد {count} فاتورة تحمل تاريخ إصدار مستقبلي يتعدى اليوم الحالي ({today}).",
+        "human_review_warning": "🔍 مراجعة بشرية مطلوبة (NEEDS_HUMAN_REVIEW): تم رصد {count} فاتورة تقل درجة ثقة استخراجها عن {threshold}% بسبب نقص أو عدم وضوح حقول أساسية.",
+        "vendor_spike_warning": "📈 تنبيه السلوك التاريخي للمورّد (VENDOR_VOLUME_SPIKE): تم رصد {count} فاتورة تتجاوز أضعاف المتوسط التاريخي للمورّد.",
+        "vendor_behavioral_section": "🧠 ملف السلوك التاريخي للمورّدين (Vendor Behavioral Profiling)",
         "spend_by_vendor": "المصروفات حسب المورّد",
         "vendor_risk_summary": "ملخص المخاطر والفروقات حسب المورّد",
         "filter_risk_level": "تصفية حسب مستوى الخطورة",
+        "filter_review_status": "تصفية حسب قرار المراجعة المحاسبية",
+        "hide_closed_alerts_toggle": "إخفاء التنبيهات المغلقة/المبررة (APPROVED / DISMISSED) من التنبيهات النشطة",
+        "disposition_section_title": "✍️ قرار المراجعة المحاسبية للفاتورة (Audit Disposition)",
+        "disposition_status_label": "حالة قرار المراجعة",
+        "disposition_note_label": "ملاحظة / تبرير المحاسب",
+        "disposition_note_placeholder": "أدخل مبرر الاعتماد أو سبب التجميد/الاستبعاد (مثل: تم التحقق من العقد ومحضر الاستلام)...",
+        "save_disposition_btn": "💾 حفظ قرار المراجعة وإغلاق/تحديث الحالة",
+        "disposition_saved_success": "تم حفظ قرار المراجعة ({status}) للفاتورة بنجاح.",
+        "status_PENDING": "قيد المراجعة (PENDING)",
+        "status_APPROVED": "معتمدة ومبررة (APPROVED)",
+        "status_FLAGGED": "معلّقة للتحقيق (FLAGGED)",
+        "status_DISMISSED": "تنبيه مستبعد / مبرر (DISMISSED)",
         "inspect_invoice_key": "فحص البنود وملاحظات التدقيق لرمز الفاتورة",
         "audit_notes_prefix": "ملاحظات التدقيق",
         "line_items_deviation": "تفاصيل البنود وانحراف الأسعار",
@@ -135,6 +168,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rule_INVALID_NIF_FORMAT": "صيغة الرقم الضريبي غير مكتملة أو غير صحيحة",
         "rule_BANK_ACCOUNT_CHANGED": "تغيير بيانات الحساب البنكي للمورّد",
         "rule_NON_POSITIVE_GRAND_TOTAL": "فاتورة بإجمالي صفري أو سالب",
+        "rule_LOW_EXTRACTION_CONFIDENCE": "انخفاض ثقة القراءة الآلية (NEEDS_HUMAN_REVIEW)",
+        "rule_PO_PRICE_MISMATCH": "تجاوز سعر الوحدة لأمر الشراء (PO_PRICE_MISMATCH)",
+        "rule_PO_QTY_EXCEEDED": "تجاوز الكمية المفوترة لأمر الشراء (PO_QTY_EXCEEDED)",
+        "rule_UNAPPROVED_ITEM": "بند غير مدرج في أمر الشراء (UNAPPROVED_ITEM)",
+        "rule_VENDOR_VOLUME_SPIKE": "قفزة قيمة الفاتورة عن متوسط المورّد التاريخي (VENDOR_VOLUME_SPIKE)",
         "desc_ARITHMETIC_MISMATCH": "عدم تطابق ناتج (الكمية × سعر الوحدة) مع إجمالي البند، أو اختلاف المجموع الفرعي وضريبة القيمة المضافة والخصم عن الإجمالي النهائي.",
         "desc_PRICE_SPIKE": "تجاوز سعر الوحدة لمتوسط الأسعار التاريخية لنفس المورّد بنسبة تفوق الحد المسموح به.",
         "desc_NEAR_DUPLICATE_INVOICE": "وجود فاتورة أخرى لنفس المورّد بمبلغ متقارب جداً خلال نافذة الأيام المحددة، مما يستدعي التأكد من عدم الازدواج.",
@@ -146,6 +184,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "desc_INVALID_NIF_FORMAT": "الرقم الضريبي المسجل لا يطابق الصيغة النظامية المعتمدة (عدد الخانات أو البنية).",
         "desc_BANK_ACCOUNT_CHANGED": "تغيّر رقم الحساب البنكي (IBAN / رقم الحساب) مقارنة ببيانات السداد السابقة للمورّد.",
         "desc_NON_POSITIVE_GRAND_TOTAL": "المبلغ الإجمالي للفاتورة يساوي صفراً أو يحمل قيمة سالبة تتطلب تسوية.",
+        "desc_LOW_EXTRACTION_CONFIDENCE": "نقص في أحد الحقول الأساسية (رقم الفاتورة، التاريخ، المورد، الرقم الضريبي، الإجمالي) أو عدم تطابق مجموع الأسطر مع الإجمالي قبل الضريبة.",
+        "desc_PO_PRICE_MISMATCH": "سعر الوحدة المسجّل في الفاتورة يتجاوز السعر المتفق عليه في أمر الشراء أو عرض السعر المرجعي.",
+        "desc_PO_QTY_EXCEEDED": "الكمية المفوترة تتجاوز الكمية المعتمدة في أمر الشراء المرجعي.",
+        "desc_UNAPPROVED_ITEM": "ورود بند في الفاتورة غير موجود أصلاً في أمر الشراء أو عرض السعر المعتمد.",
+        "desc_VENDOR_VOLUME_SPIKE": "تجاوز قيمة الفاتورة الحالية ضعفين ونصف أو أكثر من متوسط فواتير المورّد التاريخية.",
     },
     "en": {
         "app_title": "Invoice Spend & Anomaly Intelligence Hub",
@@ -166,6 +209,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "price_spike_pct": "Unit Price Increase Threshold (%)",
         "near_duplicate_days": "Duplicate & Split Detection Window (Days)",
         "procurement_threshold": "Direct Approval Limit ({currency})",
+        "confidence_threshold_pct": "Min Extraction Confidence Threshold (%)",
         "sidebar_warehouse": "🗄️ Warehouse Maintenance",
         "reset_warehouse_btn": "🗑️ Reset Warehouse",
         "reset_warehouse_success": "Warehouse cleared and reinitialized.",
@@ -174,6 +218,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "section_ingest": "1. Ingest Invoices (PDF / CSV / XLSX)",
         "upload_label": "Upload invoice PDF, CSV, or XLSX files",
         "upload_help": "Select and upload multiple Arabic, French, or English invoice files at once with SHA-256 exact-duplicate protection.",
+        "po_upload_label": "📎 Reference PO / Quotation for 2-Way Matching (Optional: PDF/CSV/XLSX)",
+        "po_upload_help": "Upload an approved Purchase Order or Quotation to verify unit prices, quantities, and unapproved line items.",
+        "po_mismatch_warning": "📋 2-Way PO Matching Alert ({po_ref}): {count} discrepancy(ies) detected across unit prices, quantities, or unapproved items.",
         "process_btn": "🚀 Analyze & Store Files in Warehouse",
         "processing_spinner": "Extracting document data, running deterministic math audit, and scoring risks...",
         "processing_file": "Processing file ({current}/{total}): {filename}...",
@@ -191,9 +238,24 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "kpi_total_discrepancy": "Total Math Variance ({currency})",
         "vat_audit_warning": "⚠️ VAT Alert: {count} invoice(s) show a VAT amount deviating from the configured {vat}% standard rate.",
         "future_date_warning": "📅 Date Validity Alert: {count} invoice(s) have a future issue date beyond today ({today}).",
+        "human_review_warning": "🔍 Human Review Required (NEEDS_HUMAN_REVIEW): {count} invoice(s) scored below {threshold}% extraction confidence due to missing or suspect OCR fields.",
+        "vendor_spike_warning": "📈 Vendor Behavioral Spike (VENDOR_VOLUME_SPIKE): {count} invoice(s) exceeded multiples of the vendor's historical average invoice amount.",
+        "vendor_behavioral_section": "🧠 Vendor Behavioral Profiling (Star Schema Analytics)",
         "spend_by_vendor": "Spend by Vendor",
         "vendor_risk_summary": "Vendor Risk & Discrepancy Summary",
         "filter_risk_level": "Filter by Risk Level",
+        "filter_review_status": "Filter by Audit Disposition Status",
+        "hide_closed_alerts_toggle": "Exclude resolved invoices (APPROVED / DISMISSED) from active alert banners & open count",
+        "disposition_section_title": "✍️ Accountant Audit Disposition Decision",
+        "disposition_status_label": "Disposition Status",
+        "disposition_note_label": "Reviewer Justification Note",
+        "disposition_note_placeholder": "Enter approval justification or investigation reason (e.g., verified signed delivery note & contract)...",
+        "save_disposition_btn": "💾 Save Audit Disposition",
+        "disposition_saved_success": "Saved disposition ({status}) for the selected invoice.",
+        "status_PENDING": "Pending Review (PENDING)",
+        "status_APPROVED": "Approved & Justified (APPROVED)",
+        "status_FLAGGED": "Flagged for Investigation (FLAGGED)",
+        "status_DISMISSED": "Dismissed Alert (DISMISSED)",
         "inspect_invoice_key": "Inspect Line Items & Audit Notes for Invoice Key",
         "audit_notes_prefix": "Audit Notes",
         "line_items_deviation": "Line Items & Price Deviation",
@@ -217,6 +279,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rule_INVALID_NIF_FORMAT": "Invalid Tax ID Format",
         "rule_BANK_ACCOUNT_CHANGED": "Vendor Bank Account Changed",
         "rule_NON_POSITIVE_GRAND_TOTAL": "Zero or Negative Invoice Total",
+        "rule_LOW_EXTRACTION_CONFIDENCE": "Low Extraction Confidence (NEEDS_HUMAN_REVIEW)",
+        "rule_PO_PRICE_MISMATCH": "PO Unit Price Mismatch (PO_PRICE_MISMATCH)",
+        "rule_PO_QTY_EXCEEDED": "PO Quantity Exceeded (PO_QTY_EXCEEDED)",
+        "rule_UNAPPROVED_ITEM": "Unapproved Line Item (UNAPPROVED_ITEM)",
+        "rule_VENDOR_VOLUME_SPIKE": "Vendor Historical Volume Spike (VENDOR_VOLUME_SPIKE)",
         "desc_ARITHMETIC_MISMATCH": "Line total does not match (quantity × unit price), or subtotal, VAT, and discounts do not reconcile with the grand total.",
         "desc_PRICE_SPIKE": "Unit price exceeds the vendor's historical average by more than the configured threshold percentage.",
         "desc_NEAR_DUPLICATE_INVOICE": "Another invoice from the same vendor with a closely matching amount was issued within the configured day window.",
@@ -228,6 +295,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "desc_INVALID_NIF_FORMAT": "Tax registration number does not follow the required standard format.",
         "desc_BANK_ACCOUNT_CHANGED": "Vendor bank account details (IBAN / account number) changed compared to prior approved invoices.",
         "desc_NON_POSITIVE_GRAND_TOTAL": "Invoice grand total is zero or negative and requires accounting review.",
+        "desc_LOW_EXTRACTION_CONFIDENCE": "Missing core fields (invoice number, date, vendor, tax ID, total) or mismatch between line items sum and subtotal.",
+        "desc_PO_PRICE_MISMATCH": "Invoiced unit price exceeds the price agreed in the reference Purchase Order or Quotation.",
+        "desc_PO_QTY_EXCEEDED": "Invoiced quantity exceeds the authorized quantity in the reference Purchase Order.",
+        "desc_UNAPPROVED_ITEM": "Invoice includes a line item not present in the approved reference Purchase Order or Quotation.",
+        "desc_VENDOR_VOLUME_SPIKE": "Current invoice amount exceeds 2.5x or more of the vendor's historical average invoice value.",
     },
     "fr": {
         "app_title": "Plateforme d'Audit des Factures et Détection d'Anomalies",
@@ -248,6 +320,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "price_spike_pct": "Seuil de hausse du prix unitaire (%)",
         "near_duplicate_days": "Fenêtre doublons / fractionnement (jours)",
         "procurement_threshold": "Plafond d'approbation directe ({currency})",
+        "confidence_threshold_pct": "Seuil min. de confiance d'extraction (%)",
         "sidebar_warehouse": "🗄️ Maintenance de l'Entrepôt",
         "reset_warehouse_btn": "🗑️ Réinitialiser l'Entrepôt",
         "reset_warehouse_success": "L'entrepôt a été vidé et réinitialisé avec succès.",
@@ -256,6 +329,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "section_ingest": "1. Importer des factures (PDF / CSV / XLSX)",
         "upload_label": "Téléverser des factures PDF, CSV ou XLSX",
         "upload_help": "Sélectionnez et téléversez plusieurs fichiers (arabe, français, anglais) simultanément avec protection anti-doublon SHA-256.",
+        "po_upload_label": "📎 Bon de Commande (BC) / Devis de référence pour rapprochement (Optionnel : PDF/CSV/XLSX)",
+        "po_upload_help": "Téléversez un bon de commande ou devis approuvé pour vérifier les prix unitaires, quantités et articles non autorisés.",
+        "po_mismatch_warning": "📋 Alerte Rapprochement BC ({po_ref}) : {count} écart(s) détecté(s) sur les prix, quantités ou articles non approuvés.",
         "process_btn": "🚀 Analyser et Stocker les Fichiers",
         "processing_spinner": "Extraction des données, audit arithmétique et calcul du score de risque...",
         "processing_file": "Traitement du fichier ({current}/{total}) : {filename}...",
@@ -273,9 +349,24 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "kpi_total_discrepancy": "Écart Arithmétique Total ({currency})",
         "vat_audit_warning": "⚠️ Alerte TVA : {count} facture(s) présentent un montant de TVA s'écartant du taux standard de {vat}%.",
         "future_date_warning": "📅 Alerte Validité de Date : {count} facture(s) portent une date d'émission future dépassant aujourd'hui ({today}).",
+        "human_review_warning": "🔍 Révision Humaine Requise (NEEDS_HUMAN_REVIEW) : {count} facture(s) ont un score de confiance inférieur à {threshold}% (champs manquants ou douteux).",
+        "vendor_spike_warning": "📈 Pic Comportemental Fournisseur (VENDOR_VOLUME_SPIKE) : {count} facture(s) dépassent plusieurs fois la moyenne historique du fournisseur.",
+        "vendor_behavioral_section": "🧠 Profilage Comportemental des Fournisseurs (Star Schema)",
         "spend_by_vendor": "Dépenses par Fournisseur",
         "vendor_risk_summary": "Synthèse des Risques et Écarts par Fournisseur",
         "filter_risk_level": "Filtrer par niveau de risque",
+        "filter_review_status": "Filtrer par décision de révision",
+        "hide_closed_alerts_toggle": "Exclure les factures clôturées (APPROVED / DISMISSED) des alertes actives",
+        "disposition_section_title": "✍️ Décision de Révision Comptable (Audit Disposition)",
+        "disposition_status_label": "Statut de révision",
+        "disposition_note_label": "Justification du réviseur",
+        "disposition_note_placeholder": "Saisir le motif d'approbation ou de blocage (ex. bon de livraison vérifié)...",
+        "save_disposition_btn": "💾 Enregistrer la décision",
+        "disposition_saved_success": "Décision de révision ({status}) enregistrée avec succès.",
+        "status_PENDING": "En attente (PENDING)",
+        "status_APPROVED": "Approuvée (APPROVED)",
+        "status_FLAGGED": "Signalée / Bloquée (FLAGGED)",
+        "status_DISMISSED": "Alerte écartée (DISMISSED)",
         "inspect_invoice_key": "Inspecter les lignes et notes d'audit pour la clé facture",
         "audit_notes_prefix": "Notes d'audit",
         "line_items_deviation": "Lignes de facture et écart de prix",
@@ -299,6 +390,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rule_INVALID_NIF_FORMAT": "Format d'identifiant fiscal invalide",
         "rule_BANK_ACCOUNT_CHANGED": "Changement de coordonnées bancaires",
         "rule_NON_POSITIVE_GRAND_TOTAL": "Total facture nul ou négatif",
+        "rule_LOW_EXTRACTION_CONFIDENCE": "Confiance d'extraction faible (NEEDS_HUMAN_REVIEW)",
+        "rule_PO_PRICE_MISMATCH": "Écart de prix vs BC (PO_PRICE_MISMATCH)",
+        "rule_PO_QTY_EXCEEDED": "Quantité dépassée vs BC (PO_QTY_EXCEEDED)",
+        "rule_UNAPPROVED_ITEM": "Article non approuvé (UNAPPROVED_ITEM)",
+        "rule_VENDOR_VOLUME_SPIKE": "Pic de volume historique fournisseur (VENDOR_VOLUME_SPIKE)",
         "desc_ARITHMETIC_MISMATCH": "Le total ligne ne correspond pas à (quantité × prix unitaire), ou le total HT, la TVA et la remise ne concordent pas avec le TTC.",
         "desc_PRICE_SPIKE": "Le prix unitaire dépasse la moyenne historique du fournisseur au-delà du pourcentage autorisé.",
         "desc_NEAR_DUPLICATE_INVOICE": "Une autre facture du même fournisseur avec un montant très proche a été émise dans la fenêtre de jours configurée.",
@@ -310,6 +406,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "desc_INVALID_NIF_FORMAT": "L'identifiant fiscal ne respecte pas le format réglementaire attendu.",
         "desc_BANK_ACCOUNT_CHANGED": "Les coordonnées bancaires (IBAN / RIB) ont changé par rapport aux factures précédentes.",
         "desc_NON_POSITIVE_GRAND_TOTAL": "Le montant total TTC est nul ou négatif et nécessite une régularisation comptable.",
+        "desc_LOW_EXTRACTION_CONFIDENCE": "Champs obligatoires manquants (numéro, date, fournisseur, NIF, total) ou écart entre la somme des lignes et le montant HT.",
+        "desc_PO_PRICE_MISMATCH": "Le prix unitaire facturé dépasse le prix convenu dans le bon de commande ou devis de référence.",
+        "desc_PO_QTY_EXCEEDED": "La quantité facturée dépasse la quantité autorisée dans le bon de commande de référence.",
+        "desc_UNAPPROVED_ITEM": "La facture comporte un article absent du bon de commande ou devis approuvé.",
+        "desc_VENDOR_VOLUME_SPIKE": "Le montant de la facture actuelle dépasse 2,5 fois ou plus la moyenne historique du fournisseur.",
     },
 }
 
@@ -333,10 +434,15 @@ COLUMN_LABELS: Dict[str, Dict[str, str]] = {
         "discrepancy_amount": "الفرق الحسابي",
         "risk_score": "نقاط المخاطر",
         "risk_level": "مستوى الخطورة",
+        "review_status": "قرار المراجعة",
+        "reviewer_note": "ملاحظة المحاسب",
         "summary_notes": "ملاحظات التدقيق المحاسبي",
         "status": "الحالة",
         "total_spend": "إجمالي المصروفات",
         "invoice_count": "عدد الفواتير",
+        "historical_avg_invoice": "متوسط قيمة الفاتورة التاريخي",
+        "round_amount_ratio_pct": "نسبة الأرقام المستديرة (%)",
+        "month_end_ratio_pct": "نسبة فواتير آخر 3 أيام بالشهر (%)",
         "avg_risk_score": "متوسط المخاطر",
         "total_discrepancy": "إجمالي الفروقات",
         "line_number": "رقم البند",
@@ -368,10 +474,15 @@ COLUMN_LABELS: Dict[str, Dict[str, str]] = {
         "discrepancy_amount": "Écart",
         "risk_score": "Score Risque",
         "risk_level": "Niveau Risque",
+        "review_status": "Décision Révision",
+        "reviewer_note": "Note du Réviseur",
         "summary_notes": "Notes d'Audit Comptable",
         "status": "Statut",
         "total_spend": "Dépenses Totales",
         "invoice_count": "Nb Factures",
+        "historical_avg_invoice": "Moyenne Historique Facture",
+        "round_amount_ratio_pct": "Taux Montants Arrondis (%)",
+        "month_end_ratio_pct": "Taux Fin de Mois - 3j (%)",
         "avg_risk_score": "Risque Moyen",
         "total_discrepancy": "Écart Total",
         "line_number": "N° Ligne",
@@ -409,6 +520,11 @@ def get_risk_label(risk_level: str, lang: str = "ar") -> str:
     return t(f"risk_{risk_level.upper()}", lang=lang)
 
 
+def get_review_status_label(status: str, lang: str = "ar") -> str:
+    """Translate audit disposition statuses (PENDING, APPROVED, FLAGGED, DISMISSED)."""
+    return t(f"status_{status.upper()}", lang=lang)
+
+
 def localize_columns(df: pd.DataFrame, lang: str) -> pd.DataFrame:
     """Return a copy of the DataFrame with localized headers and cell labels for display."""
     if df.empty:
@@ -417,6 +533,10 @@ def localize_columns(df: pd.DataFrame, lang: str) -> pd.DataFrame:
     if "risk_level" in display_df.columns:
         display_df["risk_level"] = display_df["risk_level"].apply(
             lambda v: get_risk_label(str(v), lang) if pd.notna(v) and str(v).strip() else "—"
+        )
+    if "review_status" in display_df.columns:
+        display_df["review_status"] = display_df["review_status"].apply(
+            lambda v: get_review_status_label(str(v), lang) if pd.notna(v) and str(v).strip() else get_review_status_label("PENDING", lang)
         )
     if lang not in COLUMN_LABELS:
         return display_df
@@ -789,6 +909,101 @@ def enforce_future_date_audit_flag(session, invoice_key: int | None, is_future: 
     session.commit()
 
 
+def enforce_extraction_confidence_flag(
+    session,
+    invoice_key: int | None,
+    confidence_report,
+    rule_weight: int = 25,
+) -> None:
+    """
+    Persist NEEDS_HUMAN_REVIEW tag and missing/suspect field details on the invoice
+    whenever Extraction Confidence Score falls below the configured threshold.
+    """
+    if invoice_key is None or not getattr(confidence_report, "needs_human_review", False):
+        return
+    record = session.query(FactInvoice).filter(FactInvoice.invoice_key == int(invoice_key)).first()
+    if record is None:
+        return
+    current_score = float(getattr(record, "risk_score", 0.0) or 0.0)
+    record.risk_score = min(100.0, current_score + float(max(rule_weight, 0)))
+    if str(record.risk_level or "").upper() == "LOW":
+        record.risk_level = "MEDIUM"
+    existing_notes = str(getattr(record, "summary_notes", "") or "").strip()
+    conf_note = confidence_report.arabic_summary
+    if "[NEEDS_HUMAN_REVIEW]" not in existing_notes:
+        record.summary_notes = f"{conf_note} || {existing_notes}".strip(" |")
+    session.commit()
+
+
+def enforce_po_matching_flags(
+    session,
+    invoice_key: int | None,
+    po_report,
+    rule_weights: Dict[str, int],
+) -> None:
+    """
+    Persist 2-Way PO/Quotation matching violations (PO_PRICE_MISMATCH, PO_QTY_EXCEEDED,
+    UNAPPROVED_ITEM) onto the stored FactInvoice record and escalate risk score/level.
+    """
+    if invoice_key is None or po_report is None or not getattr(po_report, "has_discrepancies", False):
+        return
+    record = session.query(FactInvoice).filter(FactInvoice.invoice_key == int(invoice_key)).first()
+    if record is None:
+        return
+
+    added_points = 0.0
+    po_notes: list[str] = []
+    for f in po_report.findings:
+        w = int(rule_weights.get(f.rule_code, 30))
+        if w <= 0:
+            continue
+        added_points += float(w)
+        po_notes.append(
+            f"[{f.rule_code}] {f.item_description}: الفاتورة ({f.invoice_value}) مقابل المرجع ({f.po_reference_value}) — {f.variance_detail}"
+        )
+
+    if not po_notes:
+        return
+
+    current_score = float(getattr(record, "risk_score", 0.0) or 0.0)
+    record.risk_score = min(100.0, current_score + added_points)
+    record.risk_level = "HIGH"
+    existing_notes = str(getattr(record, "summary_notes", "") or "").strip()
+    joined_po = " || ".join(po_notes)
+    record.summary_notes = f"{joined_po} || {existing_notes}".strip(" |")
+    session.commit()
+
+
+def enforce_vendor_volume_spike_flag(
+    session,
+    invoice_key: int | None,
+    spike_result,
+    currency: str = "",
+    rule_weight: int = 35,
+) -> None:
+    """
+    Persist VENDOR_VOLUME_SPIKE alert onto the FactInvoice record when the current
+    invoice exceeds multiples of the vendor's longitudinal historical average.
+    """
+    if invoice_key is None or not getattr(spike_result, "triggered", False) or rule_weight <= 0:
+        return
+    record = session.query(FactInvoice).filter(FactInvoice.invoice_key == int(invoice_key)).first()
+    if record is None:
+        return
+    current_score = float(getattr(record, "risk_score", 0.0) or 0.0)
+    record.risk_score = min(100.0, current_score + float(rule_weight))
+    record.risk_level = "HIGH"
+    existing_notes = str(getattr(record, "summary_notes", "") or "").strip()
+    spike_note = (
+        f"[VENDOR_VOLUME_SPIKE] قيمة الفاتورة ({spike_result.current_invoice_amount:,.2f} {currency}) "
+        f"تتجاوز المتوسط التاريخي للمورّد ({spike_result.historical_avg_invoice:,.2f} {currency} عبر "
+        f"{spike_result.historical_invoice_count} فواتير) بمقدار {spike_result.spike_multiple:.1f}x"
+    )
+    if "[VENDOR_VOLUME_SPIKE]" not in existing_notes:
+        record.summary_notes = f"{spike_note} || {existing_notes}".strip(" |")
+    session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Page Setup, Session Initialization & Sidebar Controls
 # ---------------------------------------------------------------------------
@@ -910,6 +1125,14 @@ with st.sidebar:
             step=float(curr_profile["step"]),
             key=f"approval_limit_{selected_currency}",
         )
+        confidence_threshold = st.slider(
+            t("confidence_threshold_pct", lang),
+            min_value=50.0,
+            max_value=100.0,
+            value=float(DEFAULT_CONFIDENCE_THRESHOLD),
+            step=5.0,
+            key="cfg_conf_threshold",
+        )
 
     # 3. Collapsible Audit Rule Weights & Toggles
     with st.expander(t("sidebar_rule_weights", lang), expanded=False):
@@ -953,16 +1176,36 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
     help=t("upload_help", lang),
 )
+reference_po_file = st.file_uploader(
+    t("po_upload_label", lang),
+    type=["pdf", "csv", "xlsx"],
+    accept_multiple_files=False,
+    help=t("po_upload_help", lang),
+    key="reference_po_uploader",
+)
 if uploaded_files and st.button(t("process_btn", lang), type="primary"):
     try:
         results = []
         duplicate_warnings = []
         date_warnings = []
+        review_warnings = []
+        po_warnings = []
+        vendor_spike_warnings = []
         errors = []
         seen_hashes_in_batch: Dict[str, str] = {}
         total_files = len(uploaded_files)
         progress_bar = st.progress(0.0)
         status_text = st.empty()
+
+        po_ref_number = ""
+        po_vendor_name = ""
+        po_ref_items = []
+        if reference_po_file is not None:
+            po_ref_number, po_vendor_name, po_ref_items = parse_reference_po_document(
+                reference_po_file.getvalue(),
+                reference_po_file.name,
+                api_key=effective_api_key,
+            )
 
         with SessionLocal() as session:
             existing_hashes: Set[str] = {
@@ -1002,6 +1245,9 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
 
                     if lower_name.endswith(".pdf"):
                         invoice, lines = parse_invoice_pdf_native(file_bytes, api_key=effective_api_key)
+                        conf_report = evaluate_extraction_confidence(
+                            invoice, lines, confidence_threshold=float(confidence_threshold)
+                        )
                         is_future_dt, dt_warn = evaluate_issue_date_realism(invoice, lang=lang)
                         if is_future_dt:
                             date_warnings.append(dt_warn)
@@ -1016,10 +1262,65 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                             procurement_threshold=float(proc_threshold),
                             rule_weights=active_weights,
                         )
+                        if isinstance(res, dict):
+                            res["extraction_confidence_score"] = conf_report.confidence_score
+                            res["extraction_review_tag"] = conf_report.review_tag
+                            if conf_report.needs_human_review:
+                                enforce_extraction_confidence_flag(
+                                    session,
+                                    res.get("invoice_key"),
+                                    conf_report,
+                                    rule_weight=int(active_weights.get("LOW_EXTRACTION_CONFIDENCE", 25)),
+                                )
+                                res["needs_human_review"] = True
+                                res["missing_or_suspect_fields"] = (
+                                    conf_report.missing_fields + conf_report.suspect_fields
+                                )
+                                review_warnings.append(f"{uploaded.name}: {conf_report.arabic_summary}")
                         if is_future_dt and isinstance(res, dict):
                             enforce_future_date_audit_flag(session, res.get("invoice_key"), True)
                             res["risk_level"] = "HIGH"
                             res["future_issue_date_alert"] = dt_warn
+                        if isinstance(res, dict):
+                            v_spike = evaluate_vendor_volume_spike(
+                                conn_or_session=session,
+                                vendor_name=str(getattr(invoice, "vendor_name", "") or ""),
+                                current_invoice_amount=float(getattr(invoice, "grand_total_amount", 0.0) or 0.0),
+                                exclude_invoice_key=res.get("invoice_key"),
+                            )
+                            if v_spike.triggered:
+                                enforce_vendor_volume_spike_flag(
+                                    session,
+                                    res.get("invoice_key"),
+                                    v_spike,
+                                    currency=str(getattr(invoice, "currency", "") or selected_currency),
+                                    rule_weight=int(active_weights.get("VENDOR_VOLUME_SPIKE", 35)),
+                                )
+                                res["risk_level"] = "HIGH"
+                                res["vendor_volume_spike"] = v_spike.model_dump()
+                                vendor_spike_warnings.append(
+                                    f"{uploaded.name} ({v_spike.vendor_name}): {v_spike.current_invoice_amount:,.2f} مقابل المتوسط التاريخي {v_spike.historical_avg_invoice:,.2f} ({v_spike.spike_multiple:.1f}x)"
+                                )
+                        if po_ref_items and isinstance(res, dict):
+                            po_report = match_invoice_against_po(
+                                invoice=invoice,
+                                invoice_lines=lines,
+                                po_items=po_ref_items,
+                                po_reference_number=po_ref_number,
+                                po_vendor_name=po_vendor_name,
+                            )
+                            if po_report.has_discrepancies:
+                                enforce_po_matching_flags(
+                                    session, res.get("invoice_key"), po_report, active_weights
+                                )
+                                res["risk_level"] = "HIGH"
+                                res["po_matching_alerts"] = [
+                                    f.model_dump() for f in po_report.findings
+                                ]
+                                for f in po_report.findings:
+                                    po_warnings.append(
+                                        f"{uploaded.name} [{f.rule_code}]: {f.item_description} — {f.variance_detail}"
+                                    )
                         existing_hashes.add(base_hash)
                         results.append(res)
                     else:
@@ -1030,6 +1331,9 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                             )
                             if row_hash in existing_hashes:
                                 continue
+                            conf_report = evaluate_extraction_confidence(
+                                invoice, lines, confidence_threshold=float(confidence_threshold)
+                            )
                             is_future_dt, dt_warn = evaluate_issue_date_realism(invoice, lang=lang)
                             if is_future_dt:
                                 date_warnings.append(dt_warn)
@@ -1044,10 +1348,67 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
                                 procurement_threshold=float(proc_threshold),
                                 rule_weights=active_weights,
                             )
+                            if isinstance(res, dict):
+                                res["extraction_confidence_score"] = conf_report.confidence_score
+                                res["extraction_review_tag"] = conf_report.review_tag
+                                if conf_report.needs_human_review:
+                                    enforce_extraction_confidence_flag(
+                                        session,
+                                        res.get("invoice_key"),
+                                        conf_report,
+                                        rule_weight=int(active_weights.get("LOW_EXTRACTION_CONFIDENCE", 25)),
+                                    )
+                                    res["needs_human_review"] = True
+                                    res["missing_or_suspect_fields"] = (
+                                        conf_report.missing_fields + conf_report.suspect_fields
+                                    )
+                                    review_warnings.append(
+                                        f"{uploaded.name} (#{idx}): {conf_report.arabic_summary}"
+                                    )
                             if is_future_dt and isinstance(res, dict):
                                 enforce_future_date_audit_flag(session, res.get("invoice_key"), True)
                                 res["risk_level"] = "HIGH"
                                 res["future_issue_date_alert"] = dt_warn
+                            if isinstance(res, dict):
+                                v_spike = evaluate_vendor_volume_spike(
+                                    conn_or_session=session,
+                                    vendor_name=str(getattr(invoice, "vendor_name", "") or ""),
+                                    current_invoice_amount=float(getattr(invoice, "grand_total_amount", 0.0) or 0.0),
+                                    exclude_invoice_key=res.get("invoice_key"),
+                                )
+                                if v_spike.triggered:
+                                    enforce_vendor_volume_spike_flag(
+                                        session,
+                                        res.get("invoice_key"),
+                                        v_spike,
+                                        currency=str(getattr(invoice, "currency", "") or selected_currency),
+                                        rule_weight=int(active_weights.get("VENDOR_VOLUME_SPIKE", 35)),
+                                    )
+                                    res["risk_level"] = "HIGH"
+                                    res["vendor_volume_spike"] = v_spike.model_dump()
+                                    vendor_spike_warnings.append(
+                                        f"{uploaded.name} (#{idx}) ({v_spike.vendor_name}): {v_spike.current_invoice_amount:,.2f} مقابل المتوسط التاريخي {v_spike.historical_avg_invoice:,.2f} ({v_spike.spike_multiple:.1f}x)"
+                                    )
+                            if po_ref_items and isinstance(res, dict):
+                                po_report = match_invoice_against_po(
+                                    invoice=invoice,
+                                    invoice_lines=lines,
+                                    po_items=po_ref_items,
+                                    po_reference_number=po_ref_number,
+                                    po_vendor_name=po_vendor_name,
+                                )
+                                if po_report.has_discrepancies:
+                                    enforce_po_matching_flags(
+                                        session, res.get("invoice_key"), po_report, active_weights
+                                    )
+                                    res["risk_level"] = "HIGH"
+                                    res["po_matching_alerts"] = [
+                                        f.model_dump() for f in po_report.findings
+                                    ]
+                                    for f in po_report.findings:
+                                        po_warnings.append(
+                                            f"{uploaded.name} (#{idx}) [{f.rule_code}]: {f.item_description} — {f.variance_detail}"
+                                        )
                             existing_hashes.add(row_hash)
                             results.append(res)
                 except Exception as file_exc:
@@ -1064,6 +1425,32 @@ if uploaded_files and st.button(t("process_btn", lang), type="primary"):
             )
             st.success(t("upload_success", lang, count=len(results), files=max(processed_files_count, 1)))
             st.json(results)
+        if vendor_spike_warnings:
+            st.error(t("vendor_spike_warning", lang, count=len(vendor_spike_warnings)))
+            for vs_warn in vendor_spike_warnings:
+                st.caption(f"• {vs_warn}")
+        if po_warnings:
+            st.error(
+                t(
+                    "po_mismatch_warning",
+                    lang,
+                    po_ref=po_ref_number or (reference_po_file.name if reference_po_file else "PO"),
+                    count=len(po_warnings),
+                )
+            )
+            for p_warn in po_warnings:
+                st.caption(f"• {p_warn}")
+        if review_warnings:
+            st.warning(
+                t(
+                    "human_review_warning",
+                    lang,
+                    count=len(review_warnings),
+                    threshold=f"{confidence_threshold:g}",
+                )
+            )
+            for r_warn in review_warnings:
+                st.caption(f"• {r_warn}")
         if date_warnings:
             st.error(t("future_date_warning", lang, count=len(date_warnings), today=date.today().isoformat()))
             for d_warn in date_warnings:
@@ -1098,6 +1485,8 @@ df_invoices = normalize_and_validate_dataframe(
         "discrepancy_amount",
         "risk_score",
         "risk_level",
+        "review_status",
+        "reviewer_note",
         "summary_notes",
     ],
     numeric_columns=["subtotal_amount", "tax_amount", "grand_total_amount", "discrepancy_amount", "risk_score"],
@@ -1106,6 +1495,15 @@ df_invoices = normalize_and_validate_dataframe(
 if df_invoices.empty:
     st.info(t("no_data_yet", lang))
 else:
+    # Hydrate review_status & reviewer_note from warehouse disposition columns
+    dispositions_map = fetch_invoice_dispositions_map(engine)
+    df_invoices["review_status"] = df_invoices["invoice_key"].apply(
+        lambda k: dispositions_map.get(int(k), {}).get("review_status", "PENDING") if pd.notna(k) else "PENDING"
+    )
+    df_invoices["reviewer_note"] = df_invoices["invoice_key"].apply(
+        lambda k: dispositions_map.get(int(k), {}).get("reviewer_note", "") if pd.notna(k) else ""
+    )
+
     df_invoices["currency"] = df_invoices["currency"].fillna(selected_currency).replace("", selected_currency)
     df_invoices["summary_notes"] = df_invoices.apply(
         lambda row: localize_audit_notes(
@@ -1118,9 +1516,17 @@ else:
         axis=1,
     )
 
+    hide_closed_alerts = st.checkbox(
+        t("hide_closed_alerts_toggle", lang),
+        value=True,
+        key="cfg_hide_closed_alerts",
+    )
+    active_review_mask = ~df_invoices["review_status"].isin(["APPROVED", "DISMISSED"])
+    open_invoices_df = df_invoices[active_review_mask] if hide_closed_alerts else df_invoices
+
     total_spend_val = df_invoices["grand_total_amount"].sum(skipna=True)
-    total_disc_val = df_invoices["discrepancy_amount"].abs().sum(skipna=True)
-    high_risk_count = int((df_invoices["risk_level"].fillna("").astype(str).str.upper() == "HIGH").sum())
+    total_disc_val = open_invoices_df["discrepancy_amount"].abs().sum(skipna=True)
+    high_risk_count = int((open_invoices_df["risk_level"].fillna("").astype(str).str.upper() == "HIGH").sum())
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(t("kpi_total_invoices", lang), len(df_invoices))
@@ -1134,52 +1540,44 @@ else:
         f"{total_disc_val:,.2f} {selected_currency}" if pd.notna(total_disc_val) else "—",
     )
 
-    date_col_name = "issue_date" if "issue_date" in df_invoices.columns and df_invoices["issue_date"].notna().any() else "invoice_date"
-    if date_col_name in df_invoices.columns:
-        parsed_dates = pd.to_datetime(df_invoices[date_col_name], errors="coerce")
+    date_col_name = "issue_date" if "issue_date" in open_invoices_df.columns and open_invoices_df["issue_date"].notna().any() else "invoice_date"
+    if date_col_name in open_invoices_df.columns:
+        parsed_dates = pd.to_datetime(open_invoices_df[date_col_name], errors="coerce")
         today_dt = date.today()
-        future_date_rows = df_invoices[parsed_dates.notna() & (parsed_dates.dt.date > today_dt)]
+        future_date_rows = open_invoices_df[parsed_dates.notna() & (parsed_dates.dt.date > today_dt)]
         if not future_date_rows.empty:
             st.error(t("future_date_warning", lang, count=len(future_date_rows), today=today_dt.isoformat()))
 
-    valid_vat_rows = df_invoices.dropna(subset=["subtotal_amount", "tax_amount"])
+    valid_vat_rows = open_invoices_df.dropna(subset=["subtotal_amount", "tax_amount"])
     valid_vat_rows = valid_vat_rows[valid_vat_rows["subtotal_amount"] > 0]
     if not valid_vat_rows.empty:
         effective_vat_pct = (valid_vat_rows["tax_amount"] / valid_vat_rows["subtotal_amount"]) * 100.0
         vat_mismatches = valid_vat_rows[(effective_vat_pct - vat_rate_pct).abs() > vat_tolerance_pct]
         if not vat_mismatches.empty:
             st.warning(t("vat_audit_warning", lang, count=len(vat_mismatches), vat=f"{vat_rate_pct:g}"))
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        risk_filter = st.multiselect(
+            t("filter_risk_level", lang),
+            options=["LOW", "MEDIUM", "HIGH"],
+            default=["LOW", "MEDIUM", "HIGH"],
+            format_func=lambda lvl: get_risk_label(lvl, lang),
+        )
+    with col_f2:
+        default_statuses = ["PENDING", "FLAGGED"] if hide_closed_alerts else ["PENDING", "APPROVED", "FLAGGED", "DISMISSED"]
+        status_filter = st.multiselect(
+            t("filter_review_status", lang),
+            options=["PENDING", "APPROVED", "FLAGGED", "DISMISSED"],
+            default=default_statuses,
+            format_func=lambda st_code: get_review_status_label(st_code, lang),
+        )
 
-    raw_vendor_df = fetch_vendor_spend_dataframe(engine)
-    vendor_df = normalize_and_validate_dataframe(
-        raw_vendor_df,
-        required_columns=["vendor_name", "total_spend"],
-        numeric_columns=["total_spend", "avg_risk_score", "total_discrepancy"],
-    )
-    if not vendor_df.empty and "vendor_name" in vendor_df.columns and "total_spend" in vendor_df.columns:
-        col_v1, col_v2 = st.columns([2, 1])
-        with col_v1:
-            st.markdown(f"**{t('spend_by_vendor', lang)}**")
-            chart_df = vendor_df.dropna(subset=["vendor_name", "total_spend"])
-            if not chart_df.empty:
-                st.bar_chart(chart_df.set_index("vendor_name")["total_spend"])
-        with col_v2:
-            st.markdown(f"**{t('vendor_risk_summary', lang)}**")
-            localized_vendor_df = localize_columns(vendor_df, lang)
-            vendor_col_cfg = {
-                col: st.column_config.TextColumn(width="medium")
-                for col in localized_vendor_df.columns
-            }
-            st.dataframe(localized_vendor_df, use_container_width=True, column_config=vendor_col_cfg)
-
-    risk_filter = st.multiselect(
-        t("filter_risk_level", lang),
-        options=["LOW", "MEDIUM", "HIGH"],
-        default=["LOW", "MEDIUM", "HIGH"],
-        format_func=lambda lvl: get_risk_label(lvl, lang),
-    )
     normalized_risk_series = df_invoices["risk_level"].fillna("").astype(str).str.upper()
-    filtered_df = df_invoices[normalized_risk_series.isin(risk_filter)] if risk_filter else df_invoices
+    normalized_status_series = df_invoices["review_status"].fillna("PENDING").astype(str).str.upper()
+    filtered_df = df_invoices[
+        (normalized_risk_series.isin(risk_filter) if risk_filter else True)
+        & (normalized_status_series.isin(status_filter) if status_filter else True)
+    ]
     localized_invoices_df = localize_columns(filtered_df, lang)
     invoice_col_cfg = {
         col: st.column_config.TextColumn(width="medium")
@@ -1187,17 +1585,61 @@ else:
     }
     st.dataframe(localized_invoices_df, use_container_width=True, column_config=invoice_col_cfg)
 
-    valid_keys = filtered_df["invoice_key"].dropna().tolist()
+    valid_keys = df_invoices["invoice_key"].dropna().tolist()
     selected_key = st.selectbox(
         t("inspect_invoice_key", lang),
         options=valid_keys,
     ) if valid_keys else None
 
     if selected_key is not None:
-        row_match = filtered_df[filtered_df["invoice_key"] == selected_key]
+        row_match = df_invoices[df_invoices["invoice_key"] == selected_key]
         if not row_match.empty:
             notes_val = row_match.iloc[0].get("summary_notes", "")
+            curr_disp_status = str(row_match.iloc[0].get("review_status") or "PENDING").upper()
+            curr_disp_note = str(row_match.iloc[0].get("reviewer_note") or "")
             st.info(f"{t('audit_notes_prefix', lang)}: {notes_val if pd.notna(notes_val) else '—'}")
+
+            # Interactive Accountant Audit Disposition Form
+            with st.container(border=True):
+                st.markdown(f"**{t('disposition_section_title', lang)}**")
+                disp_options = ["PENDING", "APPROVED", "FLAGGED", "DISMISSED"]
+                default_idx = disp_options.index(curr_disp_status) if curr_disp_status in disp_options else 0
+                col_d1, col_d2 = st.columns([1, 2])
+                with col_d1:
+                    new_status = st.selectbox(
+                        t("disposition_status_label", lang),
+                        options=disp_options,
+                        index=default_idx,
+                        format_func=lambda s: get_review_status_label(s, lang),
+                        key=f"disp_status_{int(selected_key)}",
+                    )
+                with col_d2:
+                    new_note = st.text_input(
+                        t("disposition_note_label", lang),
+                        value=curr_disp_note,
+                        placeholder=t("disposition_note_placeholder", lang),
+                        key=f"disp_note_{int(selected_key)}",
+                    )
+                if st.button(
+                    t("save_disposition_btn", lang),
+                    type="primary",
+                    key=f"save_disp_btn_{int(selected_key)}",
+                ):
+                    update_invoice_disposition(
+                        engine=engine,
+                        invoice_key=int(selected_key),
+                        review_status=new_status,
+                        reviewer_note=new_note,
+                    )
+                    st.success(
+                        t(
+                            "disposition_saved_success",
+                            lang,
+                            status=get_review_status_label(new_status, lang),
+                        )
+                    )
+                    st.rerun()
+
         st.markdown(f"**{t('line_items_deviation', lang)}**")
         raw_lines_df = fetch_lines_for_invoice(engine, int(selected_key))
         lines_df = normalize_and_validate_dataframe(
