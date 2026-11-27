@@ -83,44 +83,55 @@ def _query_vendor_historical_rows(
     exclude_invoice_key: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Star Schema query joining fact_invoices with dim_vendors and dim_dates
-    (with safe fallback to fact_invoices columns if schema is minimal).
+    Star Schema query joining fact_invoices with dim_vendors and dim_dates,
+    inspecting exact column names in each table to prevent 'no such column' errors.
     """
-    inspect_sql = text("PRAGMA table_info(fact_invoices);")
-    cols_rows = conn_or_session.execute(inspect_sql).fetchall()
-    fact_cols = {str(r[1]).lower() for r in cols_rows}
+    fact_rows = conn_or_session.execute(text("PRAGMA table_info(fact_invoices);")).fetchall()
+    fact_cols = {str(r[1]).lower() for r in fact_rows}
     if not fact_cols:
         return []
 
-    has_dim_vendors = (
-        conn_or_session.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='dim_vendors';")
-        ).fetchone()
-        is not None
-    )
-    has_dim_dates = (
-        conn_or_session.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='dim_dates';")
-        ).fetchone()
-        is not None
-    )
+    dv_rows = conn_or_session.execute(text("PRAGMA table_info(dim_vendors);")).fetchall()
+    dv_cols = {str(r[1]).lower() for r in dv_rows}
 
-    if has_dim_vendors and "vendor_key" in fact_cols:
-        vendor_expr = "COALESCE(dv.vendor_name, fi.vendor_name, 'Unknown')"
+    dd_rows = conn_or_session.execute(text("PRAGMA table_info(dim_dates);")).fetchall()
+    dd_cols = {str(r[1]).lower() for r in dd_rows}
+
+    # Resolve vendor name column dynamically across dim_vendors and fact_invoices
+    vendor_candidates: List[str] = []
+    join_vendor = ""
+    if dv_cols and "vendor_key" in fact_cols and "vendor_key" in dv_cols:
         join_vendor = "LEFT JOIN dim_vendors dv ON fi.vendor_key = dv.vendor_key"
-    else:
-        vendor_expr = "COALESCE(fi.vendor_name, 'Unknown')"
-        join_vendor = ""
+        for cand in ("vendor_name", "canonical_name", "name", "supplier_name"):
+            if cand in dv_cols:
+                vendor_candidates.append(f"dv.{cand}")
+                break
 
-    if has_dim_dates and "date_key" in fact_cols:
-        date_expr = "COALESCE(fi.invoice_date, dd.full_date)"
-        join_date = "LEFT JOIN dim_dates dd ON fi.date_key = dd.date_key"
-    elif "invoice_date" in fact_cols:
-        date_expr = "fi.invoice_date"
-        join_date = ""
+    for cand in ("vendor_name", "supplier_name", "name"):
+        if cand in fact_cols:
+            vendor_candidates.append(f"fi.{cand}")
+            break
+
+    if vendor_candidates:
+        vendor_expr = f"COALESCE({', '.join(vendor_candidates)}, 'Unknown')"
     else:
-        date_expr = "fi.created_at"
-        join_date = ""
+        vendor_expr = "'Unknown'"
+
+    # Resolve date column dynamically across fact_invoices and dim_dates
+    date_candidates: List[str] = []
+    join_date = ""
+    for cand in ("invoice_date", "issue_date", "created_at"):
+        if cand in fact_cols:
+            date_candidates.append(f"fi.{cand}")
+
+    if dd_cols and "date_key" in fact_cols and "date_key" in dd_cols:
+        join_date = "LEFT JOIN dim_dates dd ON fi.date_key = dd.date_key"
+        for cand in ("full_date", "date_value", "calendar_date", "invoice_date"):
+            if cand in dd_cols:
+                date_candidates.append(f"dd.{cand}")
+                break
+
+    date_expr = f"COALESCE({', '.join(date_candidates)})" if date_candidates else "NULL"
 
     where_clauses = ["fi.grand_total_amount IS NOT NULL", "fi.grand_total_amount > 0"]
     params: Dict[str, Any] = {}
