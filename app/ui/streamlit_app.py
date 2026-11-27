@@ -146,16 +146,22 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "mode_isolated_session": "جلسة مستقلة تماماً (معزولة لكل مستخدم)",
         "mode_named_workspace": "مساحة عمل مخصصة (حسب اسم القسم/المشروع)",
         "workspace_name_input": "اسم مساحة العمل",
+        "workspace_tab_login": "🔑 تسجيل الدخول لمساحة قائمة",
+        "workspace_tab_register": "🆕 إنشاء مساحة عمل جديدة",
+        "workspace_login_name": "اسم مساحة العمل المسجّلة",
+        "workspace_register_name": "اسم مساحة العمل الجديدة",
         "workspace_password_input": "كلمة مرور مساحة العمل",
-        "workspace_password_confirm": "تأكيد كلمة المرور (لإنشاء مساحة جديدة)",
-        "workspace_create_btn": "🔐 إنشاء وحماية مساحة العمل",
-        "workspace_unlock_btn": "🔓 فتح مساحة العمل",
-        "workspace_lock_btn": "🔒 قفل مساحة العمل",
-        "workspace_pw_required": "⚠️ يرجى إدخال كلمة مرور لحماية مساحة العمل أو فتحها.",
+        "workspace_password_confirm": "تأكيد كلمة المرور",
+        "workspace_create_btn": "🔐 تسجيل مساحة العمل وحمايتها",
+        "workspace_unlock_btn": "🔓 تسجيل الدخول وفتح المساحة",
+        "workspace_lock_btn": "🔒 تسجيل الخروج / قفل المساحة",
+        "workspace_not_found": "❌ مساحة العمل '{ws}' غير موجودة. انتقل إلى تبويب «إنشاء مساحة عمل جديدة» لتسجيلها أولاً.",
+        "workspace_already_exists": "⚠️ اسم مساحة العمل '{ws}' مستخدم مسبقاً. انتقل إلى تبويب «تسجيل الدخول» أو اختر اسماً آخر.",
+        "workspace_pw_required": "⚠️ يرجى إدخال اسم مساحة العمل وكلمة المرور.",
         "workspace_pw_mismatch": "❌ كلمتا المرور غير متطابقتين.",
         "workspace_pw_short": "⚠️ يجب أن تتكون كلمة المرور من 4 أحرف على الأقل.",
         "workspace_pw_invalid": "❌ كلمة المرور غير صحيحة لمساحة العمل هذه.",
-        "workspace_locked_banner": "🔒 مساحة العمل '{ws}' محمية بكلمة مرور. أدخل كلمة المرور في الشريط الجانبي لفتح البيانات.",
+        "workspace_locked_banner": "🔒 أنت في وضع مساحات العمل المخصصة. يرجى تسجيل الدخول أو إنشاء مساحة عمل جديدة من الشريط الجانبي.",
         "workspace_unlocked_badge": "🔓 مساحة العمل مفتوحة ومؤمّنة: {ws}",
         "active_workspace_badge": "مساحة العمل النشطة: {ws}",
         "new_isolated_session_btn": "🆕 بدء جلسة جديدة معزولة",
@@ -271,17 +277,23 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "mode_isolated_session": "Isolated User Session (Private per browser)",
         "mode_named_workspace": "Named Workspace (Department / Project)",
         "workspace_name_input": "Workspace Name",
+        "workspace_tab_login": "🔑 Sign In to Workspace",
+        "workspace_tab_register": "🆕 Register New Workspace",
+        "workspace_login_name": "Existing Workspace Name",
+        "workspace_register_name": "New Workspace Name",
         "workspace_password_input": "Workspace Password",
-        "workspace_password_confirm": "Confirm Password (for new workspace)",
-        "workspace_create_btn": "🔐 Create & Protect Workspace",
-        "workspace_unlock_btn": "🔓 Unlock Workspace",
-        "workspace_lock_btn": "🔒 Lock Workspace",
-        "workspace_pw_required": "⚠️ Please enter a password to create or unlock this workspace.",
+        "workspace_password_confirm": "Confirm Password",
+        "workspace_create_btn": "🔐 Register & Protect Workspace",
+        "workspace_unlock_btn": "🔓 Sign In & Unlock",
+        "workspace_lock_btn": "🔒 Sign Out / Lock Workspace",
+        "workspace_not_found": "❌ Workspace '{ws}' does not exist. Switch to 'Register New Workspace' to create it first.",
+        "workspace_already_exists": "⚠️ Workspace '{ws}' already exists. Switch to 'Sign In' or choose a different name.",
+        "workspace_pw_required": "⚠️ Please enter both workspace name and password.",
         "workspace_pw_mismatch": "❌ Passwords do not match.",
         "workspace_pw_short": "⚠️ Password must be at least 4 characters long.",
         "workspace_pw_invalid": "❌ Incorrect password for this workspace.",
-        "workspace_locked_banner": "🔒 Workspace '{ws}' is password-protected. Enter the password in the sidebar to unlock.",
-        "workspace_unlocked_badge": "🔓 Workspace unlocked & secured: {ws}",
+        "workspace_locked_banner": "🔒 Named Workspace mode active. Please sign in or register a new workspace in the sidebar.",
+        "workspace_unlocked_badge": "🔓 Workspace signed in & secured: {ws}",
         "active_workspace_badge": "Active Workspace: {ws}",
         "new_isolated_session_btn": "🆕 Start New Isolated Session",
         "api_key_server_active": "🔒 Server secret active & isolated",
@@ -396,17 +408,23 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "mode_isolated_session": "Session isolée (Privée par utilisateur)",
         "mode_named_workspace": "Espace de travail nommé (Département / Projet)",
         "workspace_name_input": "Nom de l'espace de travail",
+        "workspace_tab_login": "🔑 Connexion à un espace",
+        "workspace_tab_register": "🆕 Créer un nouvel espace",
+        "workspace_login_name": "Nom de l'espace existant",
+        "workspace_register_name": "Nom du nouvel espace",
         "workspace_password_input": "Mot de passe de l'espace",
-        "workspace_password_confirm": "Confirmer le mot de passe (nouvel espace)",
+        "workspace_password_confirm": "Confirmer le mot de passe",
         "workspace_create_btn": "🔐 Créer et protéger l'espace",
-        "workspace_unlock_btn": "🔓 Déverrouiller l'espace",
-        "workspace_lock_btn": "🔒 Verrouiller l'espace",
-        "workspace_pw_required": "⚠️ Veuillez saisir un mot de passe pour créer ou déverrouiller cet espace.",
+        "workspace_unlock_btn": "🔓 Se connecter et ouvrir",
+        "workspace_lock_btn": "🔒 Déconnexion / Verrouiller",
+        "workspace_not_found": "❌ L'espace « {ws} » n'existe pas. Utilisez l'onglet « Créer un nouvel espace ».",
+        "workspace_already_exists": "⚠️ L'espace « {ws} » existe déjà. Utilisez l'onglet « Connexion » ou choisissez un autre nom.",
+        "workspace_pw_required": "⚠️ Veuillez saisir le nom de l'espace et le mot de passe.",
         "workspace_pw_mismatch": "❌ Les mots de passe ne correspondent pas.",
         "workspace_pw_short": "⚠️ Le mot de passe doit contenir au moins 4 caractères.",
         "workspace_pw_invalid": "❌ Mot de passe incorrect pour cet espace de travail.",
-        "workspace_locked_banner": "🔒 L'espace « {ws} » est protégé par mot de passe. Saisissez-le dans la barre latérale.",
-        "workspace_unlocked_badge": "🔓 Espace déverrouillé et sécurisé : {ws}",
+        "workspace_locked_banner": "🔒 Mode espace nommé actif. Veuillez vous connecter ou créer un espace dans la barre latérale.",
+        "workspace_unlocked_badge": "🔓 Espace connecté et sécurisé : {ws}",
         "active_workspace_badge": "Espace actif : {ws}",
         "new_isolated_session_btn": "🆕 Nouvelle session isolée",
         "api_key_server_active": "🔒 Clé serveur active et isolée",
@@ -1318,47 +1336,82 @@ def main() -> None:
                     st.rerun()
                 st.caption(t("active_workspace_badge", lang, ws=f"`{active_ws_slug}`"))
             else:
-                raw_ws_name = st.text_input(t("workspace_name_input", lang), value="audit_team_1")
-                active_ws_slug = sanitize_workspace_slug(raw_ws_name)
                 unlocked_set: Set[str] = st.session_state.setdefault("unlocked_named_workspaces", set())
-                ws_exists = is_named_workspace_registered(active_ws_slug)
+                current_named_ws = st.session_state.get("active_named_workspace_slug", "")
 
-                if active_ws_slug in unlocked_set:
+                if current_named_ws and current_named_ws in unlocked_set:
+                    active_ws_slug = current_named_ws
                     workspace_unlocked = True
                     st.caption(t("workspace_unlocked_badge", lang, ws=f"`{active_ws_slug}`"))
                     if st.button(t("workspace_lock_btn", lang), use_container_width=True):
                         unlocked_set.discard(active_ws_slug)
+                        st.session_state["active_named_workspace_slug"] = ""
                         st.rerun()
                 else:
                     workspace_unlocked = False
-                    pw_input = st.text_input(
-                        t("workspace_password_input", lang),
-                        type="password",
-                        key=f"ws_pw_{active_ws_slug}",
+                    active_ws_slug = ""
+                    tab_login, tab_register = st.tabs(
+                        [t("workspace_tab_login", lang), t("workspace_tab_register", lang)]
                     )
-                    if ws_exists:
-                        if st.button(t("workspace_unlock_btn", lang), type="primary", use_container_width=True):
-                            if not pw_input:
+
+                    # --- Tab 1: Sign In to Existing Workspace ---
+                    with tab_login:
+                        login_raw = st.text_input(
+                            t("workspace_login_name", lang),
+                            value="",
+                            placeholder="audit_team_1",
+                            key="ws_login_name_input",
+                        )
+                        login_pw = st.text_input(
+                            t("workspace_password_input", lang),
+                            type="password",
+                            key="ws_login_pw_input",
+                        )
+                        if st.button(t("workspace_unlock_btn", lang), type="primary", use_container_width=True, key="btn_ws_login"):
+                            login_slug = sanitize_workspace_slug(login_raw)
+                            if not login_raw.strip() or not login_pw:
                                 st.warning(t("workspace_pw_required", lang))
-                            elif verify_named_workspace_password(active_ws_slug, pw_input):
-                                unlocked_set.add(active_ws_slug)
+                            elif not is_named_workspace_registered(login_slug):
+                                st.error(t("workspace_not_found", lang, ws=login_slug))
+                            elif verify_named_workspace_password(login_slug, login_pw):
+                                unlocked_set.add(login_slug)
+                                st.session_state["active_named_workspace_slug"] = login_slug
                                 st.rerun()
                             else:
                                 st.error(t("workspace_pw_invalid", lang))
-                    else:
-                        pw_confirm = st.text_input(
+
+                    # --- Tab 2: Register New Workspace ---
+                    with tab_register:
+                        reg_raw = st.text_input(
+                            t("workspace_register_name", lang),
+                            value="",
+                            placeholder="finance_2026",
+                            key="ws_reg_name_input",
+                        )
+                        reg_pw = st.text_input(
+                            t("workspace_password_input", lang),
+                            type="password",
+                            key="ws_reg_pw_input",
+                        )
+                        reg_pw_confirm = st.text_input(
                             t("workspace_password_confirm", lang),
                             type="password",
-                            key=f"ws_pw_confirm_{active_ws_slug}",
+                            key="ws_reg_pw_confirm_input",
                         )
-                        if st.button(t("workspace_create_btn", lang), type="primary", use_container_width=True):
-                            if not pw_input or len(pw_input) < 4:
+                        if st.button(t("workspace_create_btn", lang), type="primary", use_container_width=True, key="btn_ws_register"):
+                            reg_slug = sanitize_workspace_slug(reg_raw)
+                            if not reg_raw.strip() or not reg_pw:
+                                st.warning(t("workspace_pw_required", lang))
+                            elif is_named_workspace_registered(reg_slug):
+                                st.error(t("workspace_already_exists", lang, ws=reg_slug))
+                            elif len(reg_pw) < 4:
                                 st.warning(t("workspace_pw_short", lang))
-                            elif pw_input != pw_confirm:
+                            elif reg_pw != reg_pw_confirm:
                                 st.error(t("workspace_pw_mismatch", lang))
                             else:
-                                register_named_workspace_password(active_ws_slug, pw_input)
-                                unlocked_set.add(active_ws_slug)
+                                register_named_workspace_password(reg_slug, reg_pw)
+                                unlocked_set.add(reg_slug)
+                                st.session_state["active_named_workspace_slug"] = reg_slug
                                 st.rerun()
 
         # 2. Collapsible Audit Thresholds & Currency Configuration
