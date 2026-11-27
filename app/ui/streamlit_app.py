@@ -96,6 +96,7 @@ from app.warehouse.vendor_profiler import (
     evaluate_vendor_volume_spike,
     fetch_all_vendor_profiles_dataframe,
 )
+from app.reporting.excel_exporter import build_executive_excel_report
 from app.warehouse.repository import (
     fetch_invoices_dataframe,
     fetch_lines_for_invoice,
@@ -1859,12 +1860,15 @@ def main() -> None:
             file_name="invoices_intelligence.csv",
             mime="text/csv",
         )
-        excel_buf = BytesIO()
-        with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
-            filtered_df.to_excel(writer, index=False, sheet_name="Invoices")
+        excel_bytes = build_executive_excel_report(
+            df_raw=filtered_df,
+            df_display=localized_invoices_df,
+            currency=selected_currency,
+            lang=lang,
+        )
         col_e2.download_button(
             label=t("export_excel", lang),
-            data=excel_buf.getvalue(),
+            data=excel_bytes,
             file_name="invoices_intelligence.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
