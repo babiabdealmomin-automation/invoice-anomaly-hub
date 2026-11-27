@@ -1041,6 +1041,109 @@ def load_original_attachment_for_invoice(
         ".webp": "image/webp",
     }
     return raw_bytes, disp_name, mime_lookup.get(ext, "application/octet-stream")
+
+
+def _ws_auth_file() -> Path:
+    auth_dir = ROOT_DIR / "data" / "workspaces"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    return auth_dir / ".ws_auth.json"
+
+
+def _load_ws_auth_store() -> Dict[str, Dict[str, str]]:
+    path = _ws_auth_file()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_ws_auth_store(store: Dict[str, Dict[str, str]]) -> None:
+    _ws_auth_file().write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _hash_ws_password(password: str, salt_hex: str) -> str:
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        bytes.fromhex(salt_hex),
+        120_000,
+    )
+    return dk.hex()
+
+
+def is_named_workspace_registered(workspace_slug: str) -> bool:
+    store = _load_ws_auth_store()
+    db_path = ROOT_DIR / "data" / "workspaces" / f"ws_{workspace_slug}.db"
+    return workspace_slug in store or db_path.exists()
+
+
+def register_named_workspace_password(workspace_slug: str, password: str) -> None:
+    store = _load_ws_auth_store()
+    salt_hex = os.urandom(16).hex()
+    store[workspace_slug] = {
+        "salt": salt_hex,
+        "hash": _hash_ws_password(password, salt_hex),
+    }
+    _save_ws_auth_store(store)
+
+
+def verify_named_workspace_password(workspace_slug: str, password: str) -> bool:
+    store = _load_ws_auth_store()
+    entry = store.get(workspace_slug)
+    if not entry:
+        return False
+    expected_hash = entry.get("hash", "")
+    salt_hex = entry.get("salt", "")
+    if not expected_hash or not salt_hex:
+        return False
+    candidate_hash = _hash_ws_password(password, salt_hex)
+    return hmac.compare_digest(candidate_hash, expected_hash)
+
+
+def _get_server_gemini_key() -> str:
+    """Read Gemini API key exclusively from server-side secrets or environment."""
+    try:
+        if "GEMINI_API_KEY" in st.secrets and str(st.secrets["GEMINI_API_KEY"]).strip():
+            return str(st.secrets["GEMINI_API_KEY"]).strip()
+    except Exception:
+        pass
+    env_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    return str(getattr(settings, "GEMINI_API_KEY", "") or "").strip()
+
+
+def sanitize_error_message(err: object) -> str:
+    """Redact any potential API keys from error messages before rendering in UI."""
+    msg = str(err or "")
+    msg = re.sub(r"AIza[0-9A-Za-z\-_]{20,}", "[REDACTED_API_KEY]", msg)
+    msg = re.sub(r"(?i)(api[_-]?key\s*[=:]\s*)['\"]?[^\s'\"]+['\"]?", r"\1[REDACTED]", msg)
+    return msg
+
+
+def evaluate_issue_date_realism(invoice: object, lang: str = "ar") -> tuple[bool, str]:
+    """Verify that the invoice issue date does not exceed today's date."""
+    raw_dt = getattr(invoice, "issue_date", None) or getattr(invoice, "invoice_date", None)
+    if raw_dt is None:
+        return False, ""
+    parsed_dt = pd.to_datetime(raw_dt, errors="coerce")
+    if pd.isna(parsed_dt):
+        return False, ""
+    today_dt = date.today()
+    if parsed_dt.date() <= today_dt:
+        return False, ""
+
+    days_ahead = (parsed_dt.date() - today_dt).days
+    inv_num = str(getattr(invoice, "invoice_number", "") or "N/A")
+    inv_dt_str = parsed_dt.date().isoformat()
+    today_str = today_dt.isoformat()
+
+    if lang == "ar":
+        msg = (
+            f"الفاتورة ({inv_num}): تاريخ الإصدار ({inv_dt_str}) يتعدى اليوم الحالي ({today_str}) "
             f"بفارق (+{days_ahead} يوم)."
         )
     elif lang == "fr":
