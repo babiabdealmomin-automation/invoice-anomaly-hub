@@ -161,7 +161,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_title": "منصة ذكاء مصروفات الفواتير وكشف الشذوذ",
         "app_subtitle": "استخراج ذكي لملفات PDF • تدقيق حسابي حتمي • تصدير تقارير المستودع",
         "disclaimer_title": "⚖️ تنويه قانوني وخصوصية البيانات",
-        "disclaimer_body": "تنويه قانوني وخصوصية البيانات: هذه المنصة أداة ذكية مساعدة للتدقيق المحاسبي وكشف الشذوذ، ولا تُعدّ مراجعة قانونية أو ضريبية معتمدة أو بديلاً عن المحاسب القانوني، وتبقى المسؤولية النهائية عن القرارات المالية على المستخدم. تُعالج البيانات في مساحة عمل معزولة ومشفّرة عند التخزين، ويُرجى عدم رفع مستندات سرية حساسة على النسخ التجريبية العامة.",
+        "disclaimer_body": "تنويه قانوني وخصوصية البيانات: هذه المنصة أداة ذكية مساعدة للتدقيق المحاسبي وكشف الشذوذ، ولا تُعدّ مراجعة قانونية أو ضريبية معتمدة أو بديلاً عن المحاسب القانوني، وتبقى المسؤولية النهائية عن القرارات المالية على المستخدم. تُعالج المستندات في مساحة عمل معزولة ومشفّرة، مع إمكانية التصدير والحذف الفوري، ويُراعى الالتزام بسياسات حوكمة البيانات المعتمدة في مؤسستك.",
         "disclaimer_ack_btn": "✓ فهمت، إخفاء التنويه",
         "sidebar_settings": "⚙️ إعدادات التدقيق",
         "sidebar_workspace_session": "🏢 مساحة العمل والجلسة المعزولة",
@@ -295,7 +295,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_title": "Invoice Spend & Anomaly Intelligence Hub",
         "app_subtitle": "Native PDF Document Intelligence • Deterministic Audit • Warehouse Exports",
         "disclaimer_title": "⚖️ Legal & Privacy Notice",
-        "disclaimer_body": "Legal & Privacy Notice: This platform is an intelligent decision-support tool for invoice auditing and anomaly detection; it does not constitute certified legal, tax, or statutory audit advice, and final financial decisions remain the user's responsibility. Data is processed within an isolated, encrypted-at-rest workspace; please avoid uploading confidential production documents to public demo instances.",
+        "disclaimer_body": "Legal & Privacy Notice: This platform is an intelligent decision-support tool for invoice auditing and anomaly detection; it does not constitute certified legal, tax, or statutory audit advice, and final financial decisions remain the user's responsibility. Documents are processed within an isolated, encrypted workspace with instant export and deletion controls; please follow your organization's internal data governance policies.",
         "disclaimer_ack_btn": "✓ Got it, dismiss notice",
         "sidebar_settings": "⚙️ Configuration",
         "sidebar_workspace_session": "🏢 Workspace & Session Isolation",
@@ -429,7 +429,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_title": "Plateforme d'Audit des Factures et Détection d'Anomalies",
         "app_subtitle": "Extraction native PDF • Audit arithmétique déterministe • Exports d'entrepôt",
         "disclaimer_title": "⚖️ Mention légale et confidentialité",
-        "disclaimer_body": "Mention légale et confidentialité : Cette plateforme est un outil d'aide à l'audit comptable et à la détection d'anomalies ; elle ne remplace pas un expert-comptable ou un commissaire aux comptes, et les décisions financières finales relèvent de la responsabilité de l'utilisateur. Les données sont traitées dans un espace isolé et chiffré au repos ; veuillez ne pas téléverser de documents confidentiels réels sur les versions de démonstration publiques.",
+        "disclaimer_body": "Mention légale et confidentialité : Cette plateforme est un outil d'aide à l'audit comptable et à la détection d'anomalies ; elle ne remplace pas un expert-comptable ou un commissaire aux comptes, et les décisions financières finales relèvent de la responsabilité de l'utilisateur. Les documents sont traités dans un espace isolé et chiffré avec contrôle d'exportation et de suppression ; veuillez respecter les politiques de gouvernance des données de votre organisation.",
         "disclaimer_ack_btn": "✓ Compris, masquer l'avis",
         "sidebar_settings": "⚙️ Configuration",
         "sidebar_workspace_session": "🏢 Espace de Travail & Session Isolée",
@@ -1092,6 +1092,10 @@ def load_original_attachment_for_invoice(
         ".webp": "image/webp",
     }
     return raw_bytes, disp_name, mime_lookup.get(orig_ext, "application/octet-stream")
+
+
+def _ws_auth_file() -> Path:
+    auth_dir = ROOT_DIR / "data" / "workspaces"
     auth_dir.mkdir(parents=True, exist_ok=True)
     return auth_dir / ".ws_auth.json"
 
