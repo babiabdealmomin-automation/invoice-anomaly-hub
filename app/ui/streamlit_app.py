@@ -97,6 +97,11 @@ from app.warehouse.vendor_profiler import (
     fetch_all_vendor_profiles_dataframe,
 )
 from app.reporting.excel_exporter import build_executive_excel_report
+from app.security.crypto_vault import (
+    decrypt_file_bytes,
+    encrypt_file_bytes,
+    enforce_tls_database_url,
+)
 from app.warehouse.repository import (
     fetch_invoices_dataframe,
     fetch_lines_for_invoice,
@@ -953,7 +958,7 @@ def resolve_workspace_database_url(workspace_slug: str) -> str:
     workspaces_dir = ROOT_DIR / "data" / "workspaces"
     workspaces_dir.mkdir(parents=True, exist_ok=True)
     db_file = (workspaces_dir / f"ws_{workspace_slug}.db").resolve()
-    return f"sqlite:///{db_file.as_posix()}?timeout=30.0"
+    return enforce_tls_database_url(f"sqlite:///{db_file.as_posix()}?timeout=30.0")
 
 
 def _workspace_attachments_dir(workspace_slug: str) -> Path:
@@ -987,24 +992,27 @@ def store_original_attachment(
     invoice_keys: list[int] | None = None,
 ) -> Path:
     """
-    Save the uploaded original document once per SHA-256 inside the isolated
-    workspace attachments folder, and map invoice_keys -> SHA-256 in manifest.json.
+    Encrypt and save the uploaded original document once per SHA-256 inside the
+    isolated workspace attachments folder (Encryption at Rest via Fernet AES+HMAC),
+    and map invoice_keys -> SHA-256 in manifest.json.
     """
     att_dir = _workspace_attachments_dir(workspace_slug)
     ext = Path(original_filename).suffix.lower() or ".bin"
     safe_ext = re.sub(r"[^a-z0-9.]", "", ext) or ".bin"
-    stored_name = f"{file_sha256}{safe_ext}"
+    stored_name = f"{file_sha256}{safe_ext}.enc"
     stored_path = att_dir / stored_name
 
-    # Deduplicate physical file write using SHA-256
+    # Deduplicate and encrypt physical file write using SHA-256 + workspace Fernet key
     if not stored_path.exists():
-        stored_path.write_bytes(file_bytes)
+        encrypted_payload = encrypt_file_bytes(file_bytes, workspace_slug=workspace_slug)
+        stored_path.write_bytes(encrypted_payload)
 
     manifest = _load_attachment_manifest(workspace_slug)
     files_map = manifest.setdefault("files", {})
     files_map[file_sha256] = {
         "stored_name": stored_name,
         "original_filename": original_filename,
+        "encrypted": "fernet_aes_hmac",
     }
     inv_map = manifest.setdefault("invoice_to_sha", {})
     for ik in invoice_keys or []:
@@ -1021,7 +1029,7 @@ def load_original_attachment_for_invoice(
     fallback_filename: str = "",
 ) -> tuple[bytes | None, str, str]:
     """
-    Safely retrieve the original file bytes, display filename, and MIME type
+    Safely retrieve and decrypt the original file bytes, display filename, and MIME type
     for an invoice_key. Never raises FileNotFoundError if ephemeral cloud
     storage was wiped; returns (None, filename, mime) instead.
     """
@@ -1044,11 +1052,12 @@ def load_original_attachment_for_invoice(
         return None, disp_name, "application/octet-stream"
 
     try:
-        raw_bytes = target_path.read_bytes()
+        encrypted_raw = target_path.read_bytes()
+        raw_bytes = decrypt_file_bytes(encrypted_raw, workspace_slug=workspace_slug)
     except OSError:
         return None, disp_name, "application/octet-stream"
 
-    ext = target_path.suffix.lower()
+    orig_ext = Path(disp_name).suffix.lower()
     mime_lookup = {
         ".pdf": "application/pdf",
         ".csv": "text/csv",
@@ -1058,11 +1067,7 @@ def load_original_attachment_for_invoice(
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
     }
-    return raw_bytes, disp_name, mime_lookup.get(ext, "application/octet-stream")
-
-
-def _ws_auth_file() -> Path:
-    auth_dir = ROOT_DIR / "data" / "workspaces"
+    return raw_bytes, disp_name, mime_lookup.get(orig_ext, "application/octet-stream")
     auth_dir.mkdir(parents=True, exist_ok=True)
     return auth_dir / ".ws_auth.json"
 
@@ -1877,7 +1882,7 @@ def main() -> None:
     if df_invoices.empty:
         st.info(t("no_data_yet", lang))
     else:
-        dispositions_map = fetch_invoice_dispositions_map(engine)
+        dispositions_map = fetch_invoice_dispositions_map(engine, workspace_slug=active_ws_slug)
         df_invoices["review_status"] = df_invoices["invoice_key"].apply(
             lambda k: dispositions_map.get(int(k), {}).get("review_status", "PENDING") if pd.notna(k) else "PENDING"
         )
@@ -2045,6 +2050,7 @@ def main() -> None:
                             invoice_key=int(selected_key),
                             review_status=new_status,
                             reviewer_note=new_note,
+                            workspace_slug=active_ws_slug,
                         )
                         st.success(
                             t(
