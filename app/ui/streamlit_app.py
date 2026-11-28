@@ -128,7 +128,7 @@ from app.warehouse.repository import (
 
 # Set page config immediately at top-level so Streamlit always renders the app shell
 st.set_page_config(
-    page_title="Invoice Spend & Anomaly Hub",
+    page_title="مدقّق الفواتير الذكي v.01",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -158,7 +158,7 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
 
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "ar": {
-        "app_title": "منصة ذكاء مصروفات الفواتير وكشف الشذوذ",
+        "app_title": "مدقّق الفواتير الذكي v.01",
         "app_subtitle": "استخراج ذكي لملفات PDF • تدقيق حسابي حتمي • تصدير تقارير المستودع",
         "disclaimer_title": "⚖️ تنويه قانوني وخصوصية البيانات",
         "disclaimer_body": "تنويه قانوني وخصوصية البيانات: هذه المنصة أداة ذكية مساعدة للتدقيق المحاسبي وكشف الشذوذ، ولا تُعدّ مراجعة قانونية أو ضريبية معتمدة أو بديلاً عن المحاسب القانوني، وتبقى المسؤولية النهائية عن القرارات المالية على المستخدم. تُعالج المستندات في مساحة عمل معزولة ومشفّرة، مع إمكانية التصدير والحذف الفوري، ويُراعى الالتزام بسياسات حوكمة البيانات المعتمدة في مؤسستك.",
