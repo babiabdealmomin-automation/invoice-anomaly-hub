@@ -98,6 +98,7 @@ from app.warehouse.vendor_profiler import (
 )
 from app.reporting.excel_exporter import build_executive_excel_report
 from app.security.crypto_vault import (
+    DecryptionIntegrityError,
     decrypt_file_bytes,
     encrypt_file_bytes,
     enforce_tls_database_url,
@@ -145,6 +146,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "ar": {
         "app_title": "منصة ذكاء مصروفات الفواتير وكشف الشذوذ",
         "app_subtitle": "استخراج ذكي لملفات PDF • تدقيق حسابي حتمي • تصدير تقارير المستودع",
+        "disclaimer_title": "⚖️ تنويه قانوني وخصوصية البيانات",
+        "disclaimer_body": "تنويه قانوني وخصوصية البيانات: هذه المنصة أداة ذكية مساعدة للتدقيق المحاسبي وكشف الشذوذ، ولا تُعدّ مراجعة قانونية أو ضريبية معتمدة أو بديلاً عن المحاسب القانوني، وتبقى المسؤولية النهائية عن القرارات المالية على المستخدم. تُعالج البيانات في مساحة عمل معزولة ومشفّرة عند التخزين، ويُرجى عدم رفع مستندات سرية حساسة على النسخ التجريبية العامة.",
+        "disclaimer_ack_btn": "✓ فهمت، إخفاء التنويه",
         "sidebar_settings": "⚙️ إعدادات التدقيق",
         "sidebar_workspace_session": "🏢 مساحة العمل والجلسة المعزولة",
         "workspace_mode": "وضع العزل",
@@ -276,6 +280,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "en": {
         "app_title": "Invoice Spend & Anomaly Intelligence Hub",
         "app_subtitle": "Native PDF Document Intelligence • Deterministic Audit • Warehouse Exports",
+        "disclaimer_title": "⚖️ Legal & Privacy Notice",
+        "disclaimer_body": "Legal & Privacy Notice: This platform is an intelligent decision-support tool for invoice auditing and anomaly detection; it does not constitute certified legal, tax, or statutory audit advice, and final financial decisions remain the user's responsibility. Data is processed within an isolated, encrypted-at-rest workspace; please avoid uploading confidential production documents to public demo instances.",
+        "disclaimer_ack_btn": "✓ Got it, dismiss notice",
         "sidebar_settings": "⚙️ Configuration",
         "sidebar_workspace_session": "🏢 Workspace & Session Isolation",
         "workspace_mode": "Isolation Mode",
@@ -407,6 +414,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "fr": {
         "app_title": "Plateforme d'Audit des Factures et Détection d'Anomalies",
         "app_subtitle": "Extraction native PDF • Audit arithmétique déterministe • Exports d'entrepôt",
+        "disclaimer_title": "⚖️ Mention légale et confidentialité",
+        "disclaimer_body": "Mention légale et confidentialité : Cette plateforme est un outil d'aide à l'audit comptable et à la détection d'anomalies ; elle ne remplace pas un expert-comptable ou un commissaire aux comptes, et les décisions financières finales relèvent de la responsabilité de l'utilisateur. Les données sont traitées dans un espace isolé et chiffré au repos ; veuillez ne pas téléverser de documents confidentiels réels sur les versions de démonstration publiques.",
+        "disclaimer_ack_btn": "✓ Compris, masquer l'avis",
         "sidebar_settings": "⚙️ Configuration",
         "sidebar_workspace_session": "🏢 Espace de Travail & Session Isolée",
         "workspace_mode": "Mode d'isolation",
@@ -1054,7 +1064,7 @@ def load_original_attachment_for_invoice(
     try:
         encrypted_raw = target_path.read_bytes()
         raw_bytes = decrypt_file_bytes(encrypted_raw, workspace_slug=workspace_slug)
-    except OSError:
+    except (OSError, DecryptionIntegrityError):
         return None, disp_name, "application/octet-stream"
 
     orig_ext = Path(disp_name).suffix.lower()
@@ -1506,6 +1516,17 @@ def main() -> None:
     st.markdown(get_direction_css(lang), unsafe_allow_html=True)
     st.title(t("app_title", lang))
     st.caption(t("app_subtitle", lang))
+
+    # Legal & Privacy Disclaimer (expanded on first visit, collapsible/dismissible via session_state)
+    if "disclaimer_dismissed" not in st.session_state:
+        st.session_state["disclaimer_dismissed"] = False
+
+    with st.expander(t("disclaimer_title", lang), expanded=not st.session_state["disclaimer_dismissed"]):
+        st.info(t("disclaimer_body", lang))
+        if not st.session_state["disclaimer_dismissed"]:
+            if st.button(t("disclaimer_ack_btn", lang), key="btn_dismiss_disclaimer"):
+                st.session_state["disclaimer_dismissed"] = True
+                st.rerun()
 
     if not workspace_unlocked:
         st.warning(t("workspace_locked_banner", lang, ws=active_ws_slug))
