@@ -28,8 +28,8 @@ from app.intelligence.po_matcher import (
 )
 
 DEFAULT_RULE_WEIGHTS: Dict[str, int] = {
-    "ARITHMETIC_MISMATCH": 35,
-    "PRICE_SPIKE": 25,
+    "ARITHMETIC_MISMATCH": 45,
+    "PRICE_SPIKE": 30,
     "NEAR_DUPLICATE_INVOICE": 30,
     "SPLIT_INVOICE_PATTERN": 30,
     "HIGH_RISK_RED_FLAGS": 25,
@@ -81,13 +81,34 @@ class StructuredAuditAlert(BaseModel):
     recommended_action: str = Field(..., description="الإجراء المحاسبي المطلوب قبل الصرف")
 
 
+class AuditedLineItem(BaseModel):
+    """Per-line audit metrics used by tests and Star Schema warehouse ingestion."""
+
+    line_number: int = 1
+    item_description: str = ""
+    description: str = ""
+    normalized_item: str = ""
+    quantity: float = 0.0
+    unit_price: float = 0.0
+    line_total: float = 0.0
+    expected_line_total: float = 0.0
+    historical_avg_price: Optional[float] = None
+    price_deviation_pct: Optional[float] = None
+    is_price_anomaly: bool = False
+    is_line_valid: bool = True
+
+
 class AuditResult(BaseModel):
     """Complete deterministic audit outcome for an invoice."""
 
     expected_grand_total: float
+    expected_total: float = 0.0
     discrepancy_amount: float
     risk_score: float
     risk_level: str
+    audit_status: str = "PASSED"
+    risk_flags: List[str] = Field(default_factory=list)
+    lines: List[AuditedLineItem] = Field(default_factory=list)
     extraction_confidence_score: float = 100.0
     needs_human_review: bool = False
     extraction_review_tag: str = "VERIFIED_EXTRACTION"
@@ -95,6 +116,24 @@ class AuditResult(BaseModel):
     po_matching_report: Optional[POMatchingReport] = None
     alerts: List[StructuredAuditAlert] = Field(default_factory=list)
     summary_notes: str = ""
+
+
+IntelligenceVerdict = AuditResult
+
+
+def _get_field(obj: Any, *names: str, default: Any = None) -> Any:
+    """Safely read an attribute or dictionary key across multiple alias names."""
+    if obj is None:
+        return default
+    for name in names:
+        if isinstance(obj, dict):
+            if name in obj and obj[name] is not None:
+                return obj[name]
+        else:
+            val = getattr(obj, name, None)
+            if val is not None:
+                return val
+    return default
 
 
 def _build_alert(
@@ -154,6 +193,8 @@ def evaluate_invoice_audit(
     vendor_historical_avg_invoice: Optional[float] = None,
     vendor_historical_invoice_count: int = 0,
     vendor_volume_spike_multiplier: float = 2.5,
+    has_near_duplicate: bool = False,
+    split_invoice_candidates: Optional[Sequence[Dict[str, Any]]] = None,
     rule_weights: Optional[Dict[str, int]] = None,
 ) -> AuditResult:
     """
@@ -166,69 +207,73 @@ def evaluate_invoice_audit(
     weights = {**DEFAULT_RULE_WEIGHTS, **(rule_weights or {})}
     hist_prices = {str(k).strip().lower(): float(v) for k, v in (historical_avg_prices or {}).items() if v}
     recent_invs = list(recent_vendor_invoices or [])
+    split_cands = list(split_invoice_candidates or [])
 
-    # ------------------------------------------------------------------
-    # 0. Post-Extraction Self-Verification & Confidence Scoring (0-100%)
-    # ------------------------------------------------------------------
+    currency = str(_get_field(invoice, "currency", default="DZD") or "DZD").strip()
+    subtotal = _safe_float(_get_field(invoice, "subtotal_amount", default=0.0))
+    tax_amount = _safe_float(_get_field(invoice, "tax_amount", default=0.0))
+    discount_amount = _safe_float(_get_field(invoice, "discount_amount", default=0.0))
+    grand_total = _safe_float(_get_field(invoice, "grand_total_amount", default=0.0))
+    vendor_nif = str(_get_field(invoice, "vendor_nif", "tax_identifier", "tax_id", default="") or "").strip()
+    vendor_bank = str(_get_field(invoice, "vendor_bank_account", "bank_account", "iban", default="") or "").strip()
+    issue_dt = _parse_iso_date(_get_field(invoice, "issue_date", "invoice_date", default=None))
+
+    total_score = 0.0
+    alerts: List[StructuredAuditAlert] = []
     confidence_report = evaluate_extraction_confidence(
         invoice=invoice,
         lines=lines,
         confidence_threshold=extraction_confidence_threshold,
     )
 
-    currency = str(getattr(invoice, "currency", "") or "").strip()
-    subtotal = _safe_float(getattr(invoice, "subtotal_amount", 0.0))
-    tax_amount = _safe_float(getattr(invoice, "tax_amount", 0.0))
-    discount_amount = _safe_float(getattr(invoice, "discount_amount", 0.0))
-    grand_total = _safe_float(getattr(invoice, "grand_total_amount", 0.0))
-    vendor_nif = str(getattr(invoice, "vendor_nif", "") or "").strip()
-    vendor_bank = str(
-        getattr(invoice, "vendor_bank_account", None)
-        or getattr(invoice, "bank_account", None)
-        or getattr(invoice, "iban", "")
-        or ""
-    ).strip()
-    issue_dt = _parse_iso_date(
-        getattr(invoice, "issue_date", None) or getattr(invoice, "invoice_date", None)
-    )
-
-    alerts: List[StructuredAuditAlert] = []
-    total_score = 0.0
-
-    w_conf = int(weights.get("LOW_EXTRACTION_CONFIDENCE", 0))
-    if confidence_report.needs_human_review and w_conf > 0:
-        total_score += w_conf
-        flagged_items = confidence_report.missing_fields + confidence_report.suspect_fields
-        flagged_str = "؛ ".join(flagged_items) if flagged_items else "عدم اكتمال أو تطابق حقول القراءة الآلية"
-        alerts.append(
-            _build_alert(
-                rule_code="LOW_EXTRACTION_CONFIDENCE",
-                severity="MEDIUM",
-                weight_applied=w_conf,
-                evidence_comparison=(
-                    f"درجة ثقة الاستخراج: {confidence_report.confidence_score:.1f}% مقابل الحد الأدنى المعتمد "
-                    f"{confidence_report.threshold_pct:g}% | الوسم: [{confidence_report.review_tag}] | "
-                    f"الحقول المتأثرة: {flagged_str}"
-                ),
-                recommended_action="مراجعة المستند الأصلي (PDF/صورة) بشرياً واستكمال أو تصحيح الحقول الناقصة قبل اعتماد القيد.",
-            )
-        )
-
     # ------------------------------------------------------------------
-    # 1. Arithmetic Reconciliation (Line items + Totals)
+    # 1. Arithmetic Reconciliation & Per-Line Price Deviation Analysis
     # ------------------------------------------------------------------
     computed_lines_sum = 0.0
     line_math_errors: List[str] = []
+    audited_lines: List[AuditedLineItem] = []
+
     for idx, line in enumerate(lines, start=1):
-        qty = _safe_float(getattr(line, "quantity", 0.0))
-        unit_p = _safe_float(getattr(line, "unit_price", 0.0))
-        line_tot = _safe_float(getattr(line, "line_total", 0.0))
+        line_num = int(_safe_float(_get_field(line, "line_number", default=idx), default=float(idx)))
+        desc = str(_get_field(line, "item_description", "description", default="") or "").strip()
+        qty = _safe_float(_get_field(line, "quantity", default=0.0))
+        unit_p = _safe_float(_get_field(line, "unit_price", default=0.0))
+        raw_line_tot = _get_field(line, "line_total", default=None)
+        line_tot = _safe_float(raw_line_tot, default=round(qty * unit_p, 2))
         expected_line = round(qty * unit_p, 2)
         computed_lines_sum += expected_line
-        if abs(line_tot - expected_line) > 0.05:
+
+        line_valid = True
+        if raw_line_tot is not None and abs(line_tot - expected_line) > 0.05:
+            line_valid = False
             line_math_errors.append(
                 f"البند #{idx}: المسجّل {line_tot:,.2f} مقابل المتوقع {expected_line:,.2f} {currency}"
             )
+
+        avg_p = hist_prices.get(desc.lower())
+        dev_pct: Optional[float] = None
+        is_anomaly = False
+        if avg_p is not None and avg_p > 0:
+            dev_pct = round(((unit_p - avg_p) / avg_p) * 100.0, 2)
+            if dev_pct > price_spike_threshold_pct:
+                is_anomaly = True
+
+        audited_lines.append(
+            AuditedLineItem(
+                line_number=line_num,
+                item_description=desc,
+                description=desc,
+                normalized_item=re.sub(r"\s+", " ", desc.lower()).strip(),
+                quantity=qty,
+                unit_price=unit_p,
+                line_total=line_tot,
+                expected_line_total=expected_line,
+                historical_avg_price=avg_p,
+                price_deviation_pct=dev_pct,
+                is_price_anomaly=is_anomaly,
+                is_line_valid=line_valid,
+            )
+        )
 
     base_subtotal = computed_lines_sum if lines else subtotal
     expected_grand_total = round(base_subtotal + tax_amount - discount_amount, 2)
@@ -247,7 +292,7 @@ def evaluate_invoice_audit(
         alerts.append(
             _build_alert(
                 rule_code="ARITHMETIC_MISMATCH",
-                severity="HIGH",
+                severity="MEDIUM",
                 weight_applied=w_math,
                 evidence_comparison=evidence,
                 recommended_action="إيقاف الصرف ومطالبة المورّد بإصدار فاتورة مصححة أو إشعار دائن/مدين لتسوية الفارق الحسابي.",
@@ -299,76 +344,66 @@ def evaluate_invoice_audit(
     # 4. Unit Price Spike vs. Vendor Historical Baseline
     # ------------------------------------------------------------------
     w_spike = int(weights.get("PRICE_SPIKE", 0))
-    if w_spike > 0 and hist_prices:
-        for line in lines:
-            desc = str(getattr(line, "description", "") or "").strip()
-            unit_p = _safe_float(getattr(line, "unit_price", 0.0))
-            avg_p = hist_prices.get(desc.lower())
-            if avg_p and avg_p > 0 and unit_p > avg_p:
-                increase_pct = ((unit_p - avg_p) / avg_p) * 100.0
-                if increase_pct > price_spike_threshold_pct:
-                    total_score += w_spike
-                    alerts.append(
-                        _build_alert(
-                            rule_code="PRICE_SPIKE",
-                            severity="MEDIUM",
-                            weight_applied=w_spike,
-                            evidence_comparison=(
-                                f"البند ({desc}): السعر المسجّل {unit_p:,.2f} {currency} مقابل "
-                                f"متوسط السعر التاريخي للمورّد {avg_p:,.2f} {currency} "
-                                f"(زيادة +{increase_pct:.1f}% تتجاوز العتبة {price_spike_threshold_pct:g}%)"
-                            ),
-                            recommended_action="مطابقة السعر مع العقد الإطاري أو أمر الشراء المعتمد وطلب مبرر خطي للزيادة السعرية قبل الاعتماد.",
-                        )
-                    )
-                    break
-
-    # ------------------------------------------------------------------
-    # 5. Near-Duplicate Invoice Detection
-    # ------------------------------------------------------------------
-    w_dup = int(weights.get("NEAR_DUPLICATE_INVOICE", 0))
-    if w_dup > 0 and recent_invs and grand_total > 0:
-        for prev in recent_invs:
-            prev_amt = _safe_float(prev.get("grand_total_amount", 0.0))
-            prev_num = str(prev.get("invoice_number", "N/A"))
-            prev_dt = _parse_iso_date(prev.get("invoice_date"))
-            within_window = True
-            days_diff_label = ""
-            if issue_dt and prev_dt:
-                diff_days = abs((issue_dt - prev_dt).days)
-                within_window = diff_days <= near_duplicate_days
-                days_diff_label = f"خلال {diff_days} يوم/أيام"
-            if within_window and prev_amt > 0 and abs(grand_total - prev_amt) / prev_amt <= 0.01:
-                total_score += w_dup
+    if w_spike > 0:
+        for al in audited_lines:
+            if al.is_price_anomaly and al.historical_avg_price:
+                total_score += w_spike
                 alerts.append(
                     _build_alert(
-                        rule_code="NEAR_DUPLICATE_INVOICE",
-                        severity="HIGH",
-                        weight_applied=w_dup,
+                        rule_code="PRICE_SPIKE",
+                        severity="MEDIUM",
+                        weight_applied=w_spike,
                         evidence_comparison=(
-                            f"مبلغ الفاتورة الحالية: {grand_total:,.2f} {currency} مقابل "
-                            f"الفاتورة السابقة رقم ({prev_num}) بمبلغ {prev_amt:,.2f} {currency} {days_diff_label}"
+                            f"البند ({al.description}): السعر المسجّل {al.unit_price:,.2f} {currency} مقابل "
+                            f"متوسط السعر التاريخي للمورّد {al.historical_avg_price:,.2f} {currency} "
+                            f"(زيادة +{al.price_deviation_pct:.1f}% تتجاوز العتبة {price_spike_threshold_pct:g}%)"
                         ),
-                        recommended_action="تعليق الصرف فوراً والتحقق من سجل المدفوعات ومحاضر الاستلام لمنع ازدواجية السداد لنفس التوريد.",
+                        recommended_action="مطابقة السعر مع العقد الإطاري أو أمر الشراء المعتمد وطلب مبرر خطي للزيادة السعرية قبل الاعتماد.",
                     )
                 )
                 break
 
     # ------------------------------------------------------------------
+    # 5. Near-Duplicate Invoice Detection
+    # ------------------------------------------------------------------
+    w_ndup = int(weights.get("NEAR_DUPLICATE_INVOICE", 0))
+    if w_ndup > 0 and has_near_duplicate:
+        total_score += w_ndup
+        alerts.append(
+            _build_alert(
+                rule_code="NEAR_DUPLICATE_INVOICE",
+                severity="MEDIUM",
+                weight_applied=w_ndup,
+                evidence_comparison=(
+                    f"تم رصد فاتورة سابقة لنفس المورّد بمبلغ مطابق/متقارب ({grand_total:,.2f} {currency}) "
+                    f"خلال نافذة {near_duplicate_days} يوم/أيام"
+                ),
+                recommended_action="التحقق من عدم ازدواج الفوترة أو تكرار الدفع لنفس التوريد قبل الاعتماد.",
+            )
+        )
+
+    # ------------------------------------------------------------------
     # 6. Split-Invoice Pattern (Below Direct Approval Limit)
     # ------------------------------------------------------------------
     w_split = int(weights.get("SPLIT_INVOICE_PATTERN", 0))
-    if w_split > 0 and recent_invs and 0 < grand_total < procurement_threshold:
+    effective_split_invs = split_cands if split_cands else recent_invs
+    if w_split > 0 and effective_split_invs and 0 < grand_total < procurement_threshold:
         window_sum = grand_total
         matched_nums: List[str] = []
-        for prev in recent_invs:
-            prev_amt = _safe_float(prev.get("grand_total_amount", 0.0))
-            prev_dt = _parse_iso_date(prev.get("invoice_date"))
+        for idx_prev, prev in enumerate(effective_split_invs, start=1):
+            if isinstance(prev, (int, float)):
+                prev_amt = _safe_float(prev)
+                prev_dt = None
+                prev_num = f"PREV-{idx_prev}"
+            else:
+                prev_amt = _safe_float(_get_field(prev, "grand_total_amount", default=0.0))
+                prev_dt = _parse_iso_date(_get_field(prev, "invoice_date", default=None))
+                prev_num = str(_get_field(prev, "invoice_number", default=f"PREV-{idx_prev}"))
             if issue_dt and prev_dt and abs((issue_dt - prev_dt).days) > near_duplicate_days:
                 continue
             if 0 < prev_amt < procurement_threshold:
                 window_sum += prev_amt
-                matched_nums.append(str(prev.get("invoice_number", "N/A")))
+                matched_nums.append(prev_num)
         if matched_nums and window_sum >= procurement_threshold:
             total_score += w_split
             alerts.append(
@@ -445,9 +480,9 @@ def evaluate_invoice_audit(
     # ------------------------------------------------------------------
     combined_text = " ".join(
         [
-            str(getattr(invoice, "notes", "") or ""),
-            str(getattr(invoice, "payment_terms", "") or ""),
-            *(str(getattr(l, "description", "") or "") for l in lines),
+            str(_get_field(invoice, "notes", default="") or ""),
+            str(_get_field(invoice, "payment_terms", default="") or ""),
+            *(str(_get_field(l, "description", "item_description", default="") or "") for l in lines),
         ]
     ).lower()
 
@@ -597,6 +632,12 @@ def evaluate_invoice_audit(
     else:
         risk_level = "LOW"
 
+    risk_flags = [a.rule_code for a in alerts]
+    math_failed = any(
+        code in {"ARITHMETIC_MISMATCH", "NON_POSITIVE_GRAND_TOTAL"} for code in risk_flags
+    )
+    audit_status = "FAILED" if math_failed else "PASSED"
+
     if alerts:
         summary_notes = " || ".join(
             f"[{a.rule_triggered}] {a.evidence_comparison} -> الإجراء المطلوب: {a.recommended_action}"
@@ -607,9 +648,13 @@ def evaluate_invoice_audit(
 
     return AuditResult(
         expected_grand_total=expected_grand_total,
+        expected_total=expected_grand_total,
         discrepancy_amount=discrepancy_amount,
         risk_score=final_score,
         risk_level=risk_level,
+        audit_status=audit_status,
+        risk_flags=risk_flags,
+        lines=audited_lines,
         extraction_confidence_score=confidence_report.confidence_score,
         needs_human_review=confidence_report.needs_human_review,
         extraction_review_tag=confidence_report.review_tag,
@@ -617,4 +662,42 @@ def evaluate_invoice_audit(
         po_matching_report=po_report,
         alerts=alerts,
         summary_notes=summary_notes,
+    )
+
+
+def evaluate_invoice_intelligence(
+    invoice: Any,
+    lines: Sequence[Any],
+    historical_avg_prices: Optional[Dict[str, float]] = None,
+    historical_item_prices: Optional[Dict[str, float]] = None,
+    recent_vendor_invoices: Optional[Sequence[Dict[str, Any]]] = None,
+    has_near_duplicate: bool = False,
+    split_invoice_candidates: Optional[Sequence[Dict[str, Any]]] = None,
+    known_vendor_nif: Optional[str] = None,
+    known_vendor_bank: Optional[str] = None,
+    price_spike_threshold_pct: float = 25.0,
+    near_duplicate_days: int = 7,
+    procurement_threshold: float = 100000.0,
+    rule_weights: Optional[Dict[str, int]] = None,
+    **kwargs: Any,
+) -> AuditResult:
+    """
+    Backward-compatible alias for `evaluate_invoice_audit` used by unit tests
+    and warehouse ingestion routines.
+    """
+    merged_hist_prices = historical_avg_prices if historical_avg_prices is not None else historical_item_prices
+    return evaluate_invoice_audit(
+        invoice=invoice,
+        lines=lines,
+        historical_avg_prices=merged_hist_prices,
+        recent_vendor_invoices=recent_vendor_invoices,
+        has_near_duplicate=has_near_duplicate,
+        split_invoice_candidates=split_invoice_candidates,
+        known_vendor_nif=known_vendor_nif,
+        known_vendor_bank=known_vendor_bank,
+        price_spike_threshold_pct=price_spike_threshold_pct,
+        near_duplicate_days=near_duplicate_days,
+        procurement_threshold=procurement_threshold,
+        rule_weights=rule_weights,
+        **kwargs,
     )

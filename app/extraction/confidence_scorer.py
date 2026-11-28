@@ -44,14 +44,28 @@ def _is_valid_date_str(val: Any) -> bool:
         return False
     if isinstance(val, date):
         return True
-    text = str(val).strip()
-    if not text:
+    txt = str(val).strip()
+    if not txt:
         return False
     try:
-        date.fromisoformat(text[:10])
+        date.fromisoformat(txt[:10])
         return True
     except ValueError:
         return False
+
+
+def _get_val(obj: Any, *names: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    for name in names:
+        if isinstance(obj, dict):
+            if name in obj and obj[name] is not None:
+                return obj[name]
+        else:
+            val = getattr(obj, name, None)
+            if val is not None:
+                return val
+    return default
 
 
 def evaluate_extraction_confidence(
@@ -79,15 +93,15 @@ def evaluate_extraction_confidence(
     suspect_fields: List[str] = []
     breakdown: Dict[str, Any] = {}
 
-    inv_number = str(getattr(invoice, "invoice_number", "") or "").strip()
-    raw_date = getattr(invoice, "issue_date", None) or getattr(invoice, "invoice_date", None)
-    vendor_name = str(getattr(invoice, "vendor_name", "") or "").strip()
+    inv_number = str(_get_val(invoice, "invoice_number", default="") or "").strip()
+    raw_date = _get_val(invoice, "issue_date", "invoice_date", default=None)
+    vendor_name = str(_get_val(invoice, "vendor_name", default="") or "").strip()
     vendor_nif = str(
-        getattr(invoice, "vendor_nif", None) or getattr(invoice, "tax_id", "") or ""
+        _get_val(invoice, "vendor_nif", "tax_identifier", "tax_id", default="") or ""
     ).strip()
-    currency = str(getattr(invoice, "currency", "") or "").strip()
-    subtotal = _safe_float(getattr(invoice, "subtotal_amount", None))
-    grand_total = _safe_float(getattr(invoice, "grand_total_amount", None))
+    currency = str(_get_val(invoice, "currency", default="") or "").strip()
+    subtotal = _safe_float(_get_val(invoice, "subtotal_amount", default=None))
+    grand_total = _safe_float(_get_val(invoice, "grand_total_amount", default=None))
 
     # ------------------------------------------------------------------
     # 1. Core Mandatory Fields Completeness (60 points total = 5 x 12)
@@ -163,10 +177,10 @@ def evaluate_extraction_confidence(
     if lines:
         computed_lines_sum = 0.0
         for line in lines:
-            l_tot = _safe_float(getattr(line, "line_total", None))
+            l_tot = _safe_float(_get_val(line, "line_total", default=None))
             if l_tot is None:
-                q = _safe_float(getattr(line, "quantity", 0.0)) or 0.0
-                p = _safe_float(getattr(line, "unit_price", 0.0)) or 0.0
+                q = _safe_float(_get_val(line, "quantity", default=0.0)) or 0.0
+                p = _safe_float(_get_val(line, "unit_price", default=0.0)) or 0.0
                 l_tot = q * p
             computed_lines_sum += l_tot
 
